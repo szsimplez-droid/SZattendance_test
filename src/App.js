@@ -1,0 +1,7979 @@
+/* eslint-disable no-unused-vars */
+/* eslint-disable react-hooks/exhaustive-deps */
+// src/App.js
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getAuth, createUserWithEmailAndPassword } from "firebase/auth";
+import React, { useState, useEffect, useCallback} from "react";
+import { jsPDF } from "jspdf";
+import {autoTable} from "jspdf-autotable";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
+import { collection, getDocs, onSnapshot,orderBy } from "firebase/firestore";// already imported, just make sure
+import { app, db, auth } from "./firebase";
+
+import {
+  writeBatch,
+  serverTimestamp,
+  addDoc,
+  query,
+  where,
+  updateDoc,
+  runTransaction,
+  doc,
+  getDoc,
+  deleteDoc,
+  setDoc,
+} from "firebase/firestore";
+
+
+import {
+  signInWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+  onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
+} from "firebase/auth";
+
+
+import "./App.css";
+import PayrollCalculator from "./PayrollCalculator";
+
+
+// sounds (place files in /public folder)
+const clickSound = new Audio("/click.mp3");
+const successSound = new Audio("/success.mp3");
+
+/* ---------------- helper: distance (meters) ---------------- */
+function getDistanceInMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371e3;
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+  const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+
+const notify = (text) => {
+  const div = document.createElement("div");
+  div.textContent = text;
+  div.style.cssText = `position: fixed; top: 18px; right: 18px; background: #2ecc71; color: #fff; padding: 10px 14px; border-radius: 6px; font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,0.12); z-index: 9999;`;
+  document.body.appendChild(div);
+  setTimeout(() => div.remove(), 3000);
+};
+
+const ATTENDANCE_LOCATION_MODES = [
+  { value: "required", label: "GPS Required" },
+  { value: "optional", label: "GPS Optional" },
+  { value: "disabled", label: "GPS Disabled" },
+];
+
+const getAttendanceLocationModeValue = (data = {}) => {
+  const mode = String(data?.attendanceLocationMode || "required").toLowerCase();
+  if (["required", "optional", "disabled"].includes(mode)) return mode;
+  return "required";
+};
+
+
+// secondary auth init (OUTSIDE App)
+const secondaryApp =
+  getApps().find((a) => a.name === "secondary") ||
+  initializeApp(app.options, "secondary");
+
+const secondaryAuth = getAuth(secondaryApp);
+
+/* ---------------- App ---------------- */
+export default function App() {
+  // Auth + role
+  const [authLoading, setAuthLoading] = useState(true);
+
+  const [user, setUser] = useState(null);
+  const [role, setRole] = useState("");
+  const [roles, setRoles] = useState([]);
+
+  const [clockLoading, setClockLoading] = useState(false);
+  const [showTimeDropdown, setShowTimeDropdown] = useState(false);
+  const [myCalendarMonth, setMyCalendarMonth] = useState(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+});
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+
+  const [newEmpAuthEmail, setNewEmpAuthEmail] = useState("");
+  const [newEmpTempPassword, setNewEmpTempPassword] = useState("");
+
+  const [loginEmail, setLoginEmail] = useState("");
+  const [tempPassword, setTempPassword] = useState("");
+  const [showTempPw, setShowTempPw] = useState(false);
+
+  const [leaderQueryInput, setLeaderQueryInput] = useState("");
+  const [leaderQuery, setLeaderQuery] = useState("");
+ 
+  const [showLeaderDropdown, setShowLeaderDropdown] = useState(false);
+
+  const [showEmpModal, setShowEmpModal] = useState(false);
+
+   // common UI
+  const [message, setMessage] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeSidebar, setActiveSidebar] = useState("my-panel");
+
+ 
+  // Employee management
+  const [employees, setEmployees] = useState([]);
+  const [editingEmp, setEditingEmp] = useState(null);
+  const [editingLocationsEmpId, setEditingLocationsEmpId] = useState(null);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [locationEditEmp, setLocationEditEmp] = useState(null);
+  const [employeeStatusFilter, setEmployeeStatusFilter] = useState("active"); // "active" | "resigned" | "all"
+
+  // attendance / lists
+  const [attendance, setAttendance] = useState([]);
+  const [allAttendance, setAllAttendance] = useState([]);
+  const [leaves, setLeaves] = useState([]);
+  const [deptFilter, setDeptFilter] = useState("");
+  const [allLeaves, setAllLeaves] = useState([]);
+  const [overtimeReqs, setOvertimeReqs] = useState([]);
+  const [allOvertime, setAllOvertime] = useState([]);
+  const [usersMap, setUsersMap] = useState({});
+  const [selectedPayroll, setSelectedPayroll] = useState(null); 
+
+  // attendance edit by leader
+const [editingLeaderAttendance, setEditingLeaderAttendance] = useState(null);
+const [leaderEditIn, setLeaderEditIn] = useState("");
+const [leaderEditOut, setLeaderEditOut] = useState("");
+
+const [nameFilter, setNameFilter] = useState("");
+const [dateFilter, setDateFilter] = useState("");
+const [fromDate, setFromDate] = useState("");
+const [toDate, setToDate] = useState("");
+
+const [attendanceNameFilter, setAttendanceNameFilter] = useState("");
+const [leaveNameFilter, setLeaveNameFilter] = useState("");
+const [leaveFromDate, setLeaveFromDate] = useState("");
+const [leaveToDate, setLeaveToDate] = useState("");
+const [otNameFilter, setOtNameFilter] = useState("");
+
+const [attendanceSearch, setAttendanceSearch] = useState("");
+const [attendanceMonth, setAttendanceMonth] = useState(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // "YYYY-MM"
+});
+
+
+// Admin filters: show approved/rejected (pending is default)
+const [showApprovedLeave, setShowApprovedLeave] = useState(false);
+const [showRejectedLeave, setShowRejectedLeave] = useState(false);
+
+const [showApprovedOT, setShowApprovedOT] = useState(false);
+const [showRejectedOT, setShowRejectedOT] = useState(false);
+
+  // P/O Report (Permission Out)
+  const [poDate, setPoDate] = useState("");
+  const [poFrom, setPoFrom] = useState("");
+  const [poTo, setPoTo] = useState("");
+  const [poReason, setpoReason] = useState("");
+  const [poList, setPoList] = useState([]);
+  const [allPoList, setAllPoList] = useState([]);
+
+  const [myPayslips, setMyPayslips] = useState([]);
+
+  // leader scope
+  const [leaderMembers, setLeaderMembers] = useState([]);
+  const [leaderLeaves, setLeaderLeaves] = useState([]);
+  const [leaderOvertime, setLeaderOvertime] = useState([]);
+  const [leaderAttendance, setLeaderAttendance] = useState([]);    // attendance records for leader's members
+
+  const [allPayroll, setAllPayroll] = useState([]);
+  const [allPayslips, setAllPayslips] = useState([]);
+  const [allPoReports, setAllPoReports] = useState([]);
+
+
+  const [empSearch, setEmpSearch] = useState("");
+  const [selectedEmpId, setSelectedEmpId] = useState(null);
+
+  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
+
+  const [notifications, setNotifications] = useState([]);
+  const [showNoti, setShowNoti] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const leaders = employees.filter(
+  (e) => (e.role === "leader") || (e.roles || []).includes("leader"));
+
+  // open in new tab start
+  const handleTabClick = (e, tab) => {
+    if (
+      e.ctrlKey ||
+      e.metaKey ||
+      e.shiftKey ||
+      e.altKey ||
+      e.button !== 0
+    ) {
+      return;
+    }
+
+    e.preventDefault();
+    setActiveSidebar(tab);
+    setSidebarOpen(false);
+    window.history.pushState({}, "", `?tab=${tab}`);
+  };
+
+    //left menu Add open/close state
+    
+
+const [openMenuGroup, setOpenMenuGroup] = useState("myMenu");
+
+ const handleGroupClick = (key) => {
+  if (desktopSidebarCollapsed) {
+    setDesktopSidebarCollapsed(false);
+    setOpenMenuGroup(key);
+    return;
+  }
+
+  setOpenMenuGroup(key);
+};
+
+  useEffect(() => {
+  const syncTabFromUrl = () => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab");
+    if (tab) setActiveSidebar(tab);
+  };
+
+  syncTabFromUrl();
+  window.addEventListener("popstate", syncTabFromUrl);
+
+  return () => window.removeEventListener("popstate", syncTabFromUrl);
+}, []);
+// open in new tab end
+
+//still login start
+useEffect(() => {
+  const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    try {
+      if (!firebaseUser) {
+        setUser(null);
+        setRole("");
+        setRoles([]);
+        setName("");
+        setMessage("");
+        setAuthLoading(false);
+        return;
+      }
+
+      setUser(firebaseUser);
+
+      const uid = firebaseUser.uid;
+      const ud = await getDoc(doc(db, "users", uid));
+
+      if (!ud.exists()) {
+        notify("User record not found in Firestore (users collection)");
+        setAuthLoading(false);
+        return;
+      }
+
+      const data = ud.data();
+
+      setRole(data.role || "");
+      const rolesArr = data.roles || (data.role ? [data.role] : []);
+      setRoles(rolesArr);
+      setName(data.name || "");
+
+      setMessage(
+        <>
+          Welcome {data.name || firebaseUser.email}
+          {/* <br />
+          You are now logged in as {data.role} */}
+        </>
+      );
+
+      if (data.location) setUserSavedLocation(data.location);
+    } catch (err) {
+      console.error("Auth restore error:", err);
+    } finally {
+      setAuthLoading(false);
+    }
+  });
+
+  return () => unsub();
+}, []);
+
+//still login end
+
+
+// notifications start
+useEffect(() => {
+  if (!user) return;
+
+  const q = query(
+    collection(db, "notifications"),
+    where("userId", "==", user.uid)
+   
+  );
+
+  const unsub = onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+
+      setNotifications(list);
+      setUnreadCount(list.filter((n) => !n.read).length);
+    },
+    (err) => {
+      console.error("Notification listener error:", err);
+    }
+  );
+
+  return () => unsub();
+}, [user]);
+
+const markAllRead = async () => {
+  const unread = notifications.filter((n) => !n.read);
+
+  for (let n of unread) {
+    await updateDoc(doc(db, "notifications", n.id), {
+      read: true,
+    });
+  }
+};
+
+const openNotification = (n) => {
+  if (n.type === "payslip") {
+    setActiveSidebar("my-payslip");
+    window.history.pushState({}, "", "?tab=my-payslip");
+  }
+
+  if (n.type === "leave") {
+    setActiveSidebar("my-leave");
+    window.history.pushState({}, "", "?tab=my-leave");
+  }
+
+  setShowNoti(false);
+};
+
+// notifications end
+
+  const emptyEmployeeForm = {
+    employeeCode: "",
+    employeeName: "",
+    myanmarName: "",
+    gender: "",
+    languageLevel:"",
+    department: "",
+    designation: "",
+    leaderId: "",
+    rank:"",
+    pitch:"",
+    JobTitleAllowance:"",
+    DirectorAllowance:"",
+    LanguageAllowance:"",
+    email: "",
+    doe: "",
+    employmentType: "",
+    probationPeriod: "",
+    dob: "",
+    role: "staff",
+    roles: ["staff"],
+    age: "",
+    nrc: "",
+    phone: "",
+    address: "",
+    contactAddress: "",
+    maritalStatus: "",
+    employmentStatus: "active",
+    lastWorkingDay: "",
+    resignedDate: "",
+  };
+
+  const [employeeForm, setEmployeeForm] = useState(emptyEmployeeForm);
+
+  const filteredEmployees = employees.filter((e) => {
+  const q = empSearch.trim().toLowerCase();
+
+  const matchSearch = !q || [
+    e.eid, e.employeeCode,
+    e.name, e.employeeName,
+    e.email,
+    e.department,
+    e.designation,
+    e.myanmarName,
+    e.phone,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .includes(q);
+
+  const status = e.employmentStatus || "active";
+  const matchStatus =
+    employeeStatusFilter === "all" ||
+    status === employeeStatusFilter;
+
+  return matchSearch && matchStatus;
+});
+
+  const openEmployeeForEdit = (emp) => {
+  setSelectedEmpId(emp.id);
+
+  setEmployeeForm({
+    employeeCode: emp.employeeCode || emp.eid || "",
+    employeeName: emp.employeeName || emp.name || "",
+    myanmarName: emp.myanmarName || "",
+    gender: emp.gender || "",
+    languageLevel:emp.languageLevel || "",
+    department: emp.department || "",
+    designation: emp.designation || "",
+    rank: emp.rank || "",
+    pitch: emp.pitch || "",
+    JobTitleAllowance: emp.JobTitleAllowance || "",
+    DirectorAllowance: emp.DirectorAllowance || "",
+    LanguageAllowance: emp.LanguageAllowance || "",
+    email: emp.email || "",
+    doe: emp.doe || emp.joinDate || "",
+    employmentType: emp.employmentType || "",
+    probationPeriod: emp.probationPeriod || "",
+    dob: emp.dob || "",
+    role: emp.role || "staff",
+    roles: emp.roles || [emp.role || "staff"],
+    age: emp.age || "",
+    nrc: emp.nrc || "",
+    phone: emp.phone || "",
+    address: emp.address || "",
+    contactAddress: emp.contactAddress || "",
+    maritalStatus: emp.maritalStatus || "",
+    leaderId: emp.leaderId || "", 
+    employmentStatus: emp.employmentStatus || "active",
+    lastWorkingDay: emp.lastWorkingDay || "",
+    resignedDate: emp.resignedDate || "",
+  });
+
+  const leader = employees.find((x) => x.id === emp.leaderId);
+  setLeaderQueryInput(leader?.name || "");  // show leader name
+  setShowLeaderDropdown(false);
+  };
+
+  const saveEmployeeProfile = async () => {
+    try {
+      if (!employeeForm.employeeCode || !employeeForm.employeeName) {
+        return notify("Employee Code and Employee Name are required.");
+      }
+
+      const payload = {
+        // keep new HR fields
+        ...employeeForm,
+
+        // keep your old fields so other screens still work
+        eid: employeeForm.employeeCode,
+        name: employeeForm.employeeName,
+
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (selectedEmpId) {
+        // UPDATE existing
+        await updateDoc(doc(db, "users", selectedEmpId), payload);
+        notify("✅ Employee updated");
+      } else {
+        // CREATE new
+        await addDoc(collection(db, "users"), {
+          ...payload,
+          createdAt: new Date().toISOString(),
+        });
+        notify("✅ New employee created");
+      }
+
+    // refresh list + reset
+    await loadEmployees();
+    setSelectedEmpId(null);
+    setEmployeeForm(emptyEmployeeForm);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Save failed: " + err.message);
+  }
+  };
+
+  
+  const startNewEmployee = () => {
+    setSelectedEmpId(null);
+    setEmployeeForm(emptyEmployeeForm);
+  };
+
+  const startCreateEmployee = () => {
+    setSelectedEmpId(null);
+    setEmployeeForm(emptyEmployeeForm);
+
+    // 🔴 clear auth fields
+    setLoginEmail("");
+    setTempPassword("");
+    setShowTempPw(false);
+
+    // ✅ clear leader search fields
+    setLeaderQueryInput("");
+    setShowLeaderDropdown(false);
+  };
+
+  useEffect(() => {
+    if (activeSidebar === "admin-employee-form") {
+      startCreateEmployee();
+    }
+  }, [activeSidebar]);
+
+  const openCreateEmployeeModal = () => {
+    startCreateEmployee();
+    setShowEmpModal(true);
+  };
+  
+  const openEditEmployeeModal = (emp) => {
+    openEmployeeForEdit(emp);     // loads data into form + sets selectedEmpId
+    setShowEmpModal(true);
+  };
+
+  const openLocationModal = (emp) => {
+  const locations = emp.locations || [{}, {}];
+
+  setLocationEditEmp({
+    ...emp,
+    locations: [
+      {
+        name: locations[0]?.name || "",
+        latitude: locations[0]?.latitude || "",
+        longitude: locations[0]?.longitude || "",
+      },
+      {
+        name: locations[1]?.name || "",
+        latitude: locations[1]?.latitude || "",
+        longitude: locations[1]?.longitude || "",
+      },
+    ],
+  });
+
+  setShowLocationModal(true);
+};
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setLeaderQuery(leaderQueryInput.trim());
+    }, 300); // ⏱ debounce time (ms)
+
+    return () => clearTimeout(t);
+  }, [leaderQueryInput]);
+
+  const employeeById = React.useMemo(() => {
+    const map = {};
+    employees.forEach((e) => (map[e.id] = e));
+    return map;
+  }, [employees]);
+
+  const departments = [
+  ...new Set(
+    Object.values(usersMap || {})
+      .map((u) => u.department)
+      .filter(Boolean)
+  ),
+];
+
+  const createEmployee = async () => {
+  try {
+    if (!loginEmail || !tempPassword) {
+      return notify("Login email and temporary password are required.");
+    }
+    if (!employeeForm.employeeCode || !employeeForm.employeeName) {
+      return notify("Employee Code and Employee Name are required.");
+    }
+
+    const cred = await createUserWithEmailAndPassword(
+      secondaryAuth,
+      loginEmail,
+      tempPassword
+    );
+
+    const uid = cred.user.uid;
+
+    await setDoc(
+      doc(db, "users", uid),
+      {
+        ...employeeForm,
+        joinDate: employeeForm.doe || "",
+        doe: employeeForm.doe || "",
+        eid: employeeForm.employeeCode,
+        name: employeeForm.employeeName,
+        email: loginEmail,
+        role: employeeForm.role || "staff",
+        roles: employeeForm.roles || [employeeForm.role || "staff"],
+        createdAt: new Date().toISOString(),
+        createdBy: auth.currentUser?.uid || null,
+        authUid: uid,
+      },
+      { merge: true }
+    );
+
+    await secondaryAuth.signOut();
+
+    notify("✅ Employee created (UID: " + uid + ")");
+    setEmployeeForm(emptyEmployeeForm);
+    setSelectedEmpId(null);
+    setLoginEmail("");
+    setTempPassword("");
+    setShowTempPw(false);
+    loadEmployees();
+    
+  } catch (err) {
+    console.error(err);
+    notify("❌ Create failed: " + (err?.message || "unknown error"));
+  }
+  };
+
+  const updateEmployee = async () => {
+    try {
+      if (!selectedEmpId) return;
+
+      await updateDoc(doc(db, "users", selectedEmpId), {
+        ...employeeForm,
+        joinDate: employeeForm.doe || "",
+        doe: employeeForm.doe || "",
+        role: employeeForm.role || "staff",
+        roles: employeeForm.roles || [employeeForm.role || "staff"],
+        eid: employeeForm.employeeCode,
+        name: employeeForm.employeeName,
+        updatedAt: new Date().toISOString(),
+        updatedBy: auth.currentUser?.uid || null,
+        leaderId: employeeForm.leaderId || "",
+      });
+
+      notify("✅ Employee updated");
+      setEmployeeForm(emptyEmployeeForm);
+      setSelectedEmpId(null);
+      loadEmployees();
+    } catch (err) {
+      console.error(err);
+      notify("❌ Update failed: " + (err?.message || "unknown error"));
+    }
+  };
+
+  const markEmployeeResigned = async () => {
+  try {
+    if (!selectedEmpId) return notify("Select employee first.");
+    if (!employeeForm.lastWorkingDay || !employeeForm.resignedDate) {
+      return notify("Please choose Last Working Day and Resigned Date.");
+    }
+
+    await updateDoc(doc(db, "users", selectedEmpId), {
+      employmentStatus: "resigned",
+      lastWorkingDay: employeeForm.lastWorkingDay,
+      resignedDate: employeeForm.resignedDate,
+      updatedAt: new Date().toISOString(),
+    });
+
+    notify("✅ Employee marked as resigned");
+    await loadEmployees();
+    await loadAllUsers();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Resign failed: " + err.message);
+  }
+};
+
+const restoreEmployeeActive = async () => {
+  try {
+    if (!selectedEmpId) return notify("Select employee first.");
+
+    await updateDoc(doc(db, "users", selectedEmpId), {
+      employmentStatus: "active",
+      lastWorkingDay: "",
+      resignedDate: "",
+      updatedAt: new Date().toISOString(),
+    });
+
+    notify("✅ Employee restored");
+    await loadEmployees();
+    await loadAllUsers();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Restore failed: " + err.message);
+  }
+};
+
+const isResignedUser = (uid) => {
+  const u = usersMap?.[uid];
+  return (u?.employmentStatus || "active") === "resigned";
+};
+
+const getLastWorkingDay = (uid) => {
+  return usersMap?.[uid]?.lastWorkingDay || "";
+};
+
+const shouldShowRecordForUser = (uid, recordDate) => {
+  const u = usersMap?.[uid];
+  if (!u) return false;
+
+  const status = u.employmentStatus || "active";
+  if (status !== "resigned") return true;
+
+  const lastDay = u.lastWorkingDay || "";
+  if (!lastDay) return false;
+
+  return (recordDate || "") <= lastDay;
+};
+
+const isResignedHistoricalRow = (uid, recordDate) => {
+  const u = usersMap?.[uid];
+  if (!u) return false;
+  if ((u.employmentStatus || "active") !== "resigned") return false;
+
+  const lastDay = u.lastWorkingDay || "";
+  if (!lastDay) return false;
+
+  return (recordDate || "") <= lastDay;
+};
+
+
+const createEmployeeSecondaryAuth = async () => {
+  try {
+    if (!newEmpAuthEmail || !newEmpTempPassword) {
+      return notify("Email and temporary password are required.");
+    }
+    if (!employeeForm.employeeCode || !employeeForm.employeeName) {
+      return notify("Employee Code and Employee Name are required.");
+    }
+
+    // 1) Create Auth user (UID generated automatically)
+    const cred = await createUserWithEmailAndPassword(
+      secondaryAuth,
+      newEmpAuthEmail,
+      newEmpTempPassword
+    );
+
+    const uid = cred.user.uid;
+
+    // 2) Save Firestore profile to users/{uid} (fits your UID-based code)
+    const payload = {
+      ...employeeForm,
+
+      // keep compatibility with your existing UI (uses eid/name)
+      eid: employeeForm.employeeCode,
+      name: employeeForm.employeeName,
+      email: newEmpAuthEmail,
+
+      role: employeeForm.role || "staff",
+      roles: employeeForm.roles || [employeeForm.role || "staff"],
+
+      leaderId: employeeForm.leaderId || "",
+
+      createdAt: new Date().toISOString(),
+      createdBy: auth.currentUser?.uid || null,
+      authUid: uid,
+    };
+
+    await setDoc(doc(db, "users", uid), payload, { merge: true });
+
+    // 3) Sign out ONLY secondary auth (admin stays logged in)
+    await secondaryAuth.signOut();
+
+    notify("✅ Employee created (UID: " + uid + ")");
+
+    // reset
+    setNewEmpAuthEmail("");
+    setNewEmpTempPassword("");
+    setEmployeeForm(emptyEmployeeForm);
+
+    // refresh list
+    loadEmployees();
+  } catch (err) {
+    console.error("createEmployeeSecondaryAuth error:", err);
+    notify("❌ Create failed: " + (err?.message || "unknown error"));
+  }
+};
+
+
+
+  //12/18
+ const functions = getFunctions();
+ 
+
+  const stripUndefined = (obj) =>
+  Object.fromEntries(Object.entries(obj).filter(([_, v]) => v !== undefined));
+
+
+  const displayUser = (uid) =>
+  usersMap[uid]?.name || usersMap[uid]?.email || uid;
+
+  const displayEmpId = (uid) => usersMap[uid]?.eid || "-";
+
+  // Leave pages search
+  const [leaveSearch, setLeaveSearch] = useState("");
+
+ const filteredUserIdsForLeave = Object.keys(usersMap)
+  .filter((uid) => {
+    const q = leaveSearch.trim().toLowerCase();
+    if (!q) return true;
+
+    const u = usersMap[uid] || {};
+    return (
+      (u.eid || "").toLowerCase().includes(q) ||
+      (u.name || "").toLowerCase().includes(q) ||
+      (u.email || "").toLowerCase().includes(q)
+    );
+  })
+  .sort((a, b) => {
+    const eidA = (usersMap[a]?.eid || "").toLowerCase();
+    const eidB = (usersMap[b]?.eid || "").toLowerCase();
+
+    // Put users without eid at bottom
+    if (!eidA && !eidB) return 0;
+    if (!eidA) return 1;
+    if (!eidB) return -1;
+
+    return eidA.localeCompare(eidB, undefined, { numeric: true });
+  });
+
+
+  /* for emplyee management search */
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [gpsSettingSearch, setGpsSettingSearch] = useState("");
+
+  const filteredEmployeeslocation = employees
+  .filter((emp) => {
+    const q = employeeSearch.trim().toLowerCase();
+    if (!q) return true;
+
+    return (
+      (emp.eid || "").toLowerCase().includes(q) ||
+      (emp.name || "").toLowerCase().includes(q) ||
+      (emp.email || "").toLowerCase().includes(q) ||
+      (emp.team || "").toLowerCase().includes(q) ||
+      (emp.position || "").toLowerCase().includes(q) ||
+      (emp.languageLevel || "").toLowerCase().includes(q) ||
+      (emp.myanmarName || "").toLowerCase().includes(q)
+    );
+  })
+  .sort((a, b) => {
+    const eidA = (a.eid || "").toLowerCase();
+    const eidB = (b.eid || "").toLowerCase();
+
+    if (!eidA && !eidB) return 0;
+    if (!eidA) return 1;
+    if (!eidB) return -1;
+
+    return eidA.localeCompare(eidB, undefined, { numeric: true });
+  });
+
+
+  const filteredGpsSettingEmployees = employees
+  .filter((emp) => {
+    const q = gpsSettingSearch.trim().toLowerCase();
+    if (!q) return true;
+
+    return (
+      (emp.eid || "").toLowerCase().includes(q) ||
+      (emp.name || "").toLowerCase().includes(q) ||
+      (emp.email || "").toLowerCase().includes(q) ||
+      (emp.department || "").toLowerCase().includes(q) ||
+      (emp.designation || "").toLowerCase().includes(q) ||
+      (emp.myanmarName || "").toLowerCase().includes(q)
+    );
+  })
+  .sort((a, b) => {
+    const eidA = (a.eid || "").toLowerCase();
+    const eidB = (b.eid || "").toLowerCase();
+
+    if (!eidA && !eidB) return 0;
+    if (!eidA) return 1;
+    if (!eidB) return -1;
+
+    return eidA.localeCompare(eidB, undefined, { numeric: true });
+  });
+
+  const chunk = (arr, size) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
+const hasRole = (r) => roles.includes(r) || role === r; // supports old users too
+const isAdmin = hasRole("admin");
+const isLeader = hasRole("leader");
+
+const isHR = hasRole("hr");
+
+// payroll permission = ONLY admin
+const canAccessPayroll = isAdmin && !isHR;
+
+
+
+// load members under a leader (users where leaderId == leader uid)
+const loadLeaderMembers = async (leaderUid) => {
+  const q = query(collection(db, "users"), where("leaderId", "==", leaderUid));
+  const snap = await getDocs(q);
+  const ids = snap.docs.map((d) => d.id); // member UIDs
+  setLeaderMembers(ids);
+  return ids;
+};
+
+const loadLeaderLeaves = async (memberIds) => {
+  if (!memberIds || memberIds.length === 0) {
+    setLeaderLeaves([]);
+    return;
+  }
+  let results = [];
+  for (const batch of chunk(memberIds, 10)) {
+    const q = query(collection(db, "leaves"), where("userId", "in", batch));
+    const snap = await getDocs(q);
+    results = results.concat(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }
+
+  // ✅ sort newest first
+  results.sort((a, b) => {
+  if (a.status === "pending" && b.status !== "pending") return -1;
+  if (a.status !== "pending" && b.status === "pending") return 1;
+  return new Date(b.startDate) - new Date(a.startDate);
+});
+
+  setLeaderLeaves(results);
+};
+
+const loadLeaderOvertime = async (memberIds) => {
+  if (!memberIds || memberIds.length === 0) {
+    setLeaderOvertime([]);
+    return;
+  }
+  let results = [];
+  for (const batch of chunk(memberIds, 10)) {
+    const q = query(collection(db, "overtimeRequests"), where("userId", "in", batch));
+    const snap = await getDocs(q);
+    results = results.concat(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }
+
+  // ✅ sort newest first
+ results.sort((a, b) => {
+  if (a.status === "pending" && b.status !== "pending") return -1;
+  if (a.status !== "pending" && b.status === "pending") return 1;
+  return new Date(b.date) - new Date(a.date);
+});
+
+  setLeaderOvertime(results);
+};
+
+const loadLeaderAttendance = async (memberIds) => {
+  if (!memberIds || memberIds.length === 0) {
+    setLeaderAttendance([]);
+    return;
+  }
+  let results = [];
+  for (const batch of chunk(memberIds, 10)) {
+    const q = query(collection(db, "attendance"), where("userId", "in", batch));
+    const snap = await getDocs(q);
+    results = results.concat(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }
+
+  // ✅ sort newest first
+  results.sort((a, b) => new Date(b.date) - new Date(a.date));
+  setLeaderAttendance(results);
+};
+
+ 
+  // Admin: remember each staff's selected leave type
+  const [leaveSelections, setLeaveSelections] = useState(() => {
+    // Load from localStorage when page opens
+    const stored = localStorage.getItem("leaveSelections");
+    return stored ? JSON.parse(stored) : {};
+  });
+
+  useEffect(() => {
+  localStorage.setItem("leaveSelections", JSON.stringify(leaveSelections));
+}, [leaveSelections]);
+
+
+  // forms
+  const [leaveStart, setLeaveStart] = useState("");
+  const [leaveEnd, setLeaveEnd] = useState("");
+  const [leaveType, setLeaveType] = useState("Full Day");
+  const [leaveName, setLeaveName] = useState("Casual Leave");
+  const [leaveReason, setLeaveReason] = useState("");
+  const [otDate, setOtDate] = useState("");
+  const [otStart, setOtStart] = useState("");
+  const [otEnd, setOtEnd] = useState("");
+  const [otReason, setOtReason] = useState("");
+
+  // location / geo-fence
+  const [withinRange, setWithinRange] = useState(false);
+  const [userSavedLocation, setUserSavedLocation] = useState(null);
+
+  // helper: time
+  // Show only time in Myanmar timezone (no date)
+  const toMyanmarTime = (utcString) =>
+    utcString
+      ? new Date(utcString).toLocaleTimeString("en-GB", {
+          timeZone: "Asia/Yangon",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "-";
+
+  // Returns today's date in YYYY-MM-DD format (Yangon time)
+/*   const getTodayDateYangon = () => {
+    const now = new Date(
+      new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
+    );
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }; */
+  const getTodayDateYangon = () => {
+  const now = new Date();
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Yangon",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
+};
+const [timeViewMode, setTimeViewMode] = useState(() => {
+  return localStorage.getItem("timeViewMode") || "myanmar";
+});
+
+useEffect(() => {
+  localStorage.setItem("timeViewMode", timeViewMode);
+}, [timeViewMode]);
+
+const formatTimeByViewMode = (isoString, mode = timeViewMode) => {
+  if (!isoString) return "-";
+
+  const date = new Date(isoString);
+
+  let timeZone;
+  if (mode === "gmt") timeZone = "UTC";
+  else if (mode === "local") {
+    return date.toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  } else {
+    timeZone = "Asia/Yangon";
+  }
+
+  return date.toLocaleTimeString("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+};
+const getYangonMinutesFromISO = (isoString) => {
+  if (!isoString) return null;
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Yangon",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(isoString));
+
+  const hour = Number(parts.find((p) => p.type === "hour")?.value || 0);
+  const minute = Number(parts.find((p) => p.type === "minute")?.value || 0);
+
+  return hour * 60 + minute;
+};
+
+const isLateByYangonTime = (isoString) => {
+  const mins = getYangonMinutesFromISO(isoString);
+  return mins != null && mins > 8 * 60;
+};
+
+const isEarlyOutByYangonTime = (isoString) => {
+  const mins = getYangonMinutesFromISO(isoString);
+  return mins != null && mins < 17 * 60;
+};
+
+  // ---------------- New helper: Check distance to multiple locations ----------------
+  const isWithinRangeOfAny = (currentLat, currentLon, locations, range = 1000) => {
+    if (!locations || locations.length === 0) return false;
+    for (let loc of locations) {
+      const d = getDistanceInMeters(currentLat, currentLon, loc.latitude, loc.longitude);
+      if (d <= range) return loc.name;
+    }
+    return false;
+  };
+
+  const getMyanmarTimeString = (date = new Date()) =>
+  date.toLocaleTimeString("en-GB", {
+    timeZone: "Asia/Yangon",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+
+  /* ---------------- login / logout ---------------- */
+  const handleLogin = async (e) => {
+  e.preventDefault();
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const uid = cred.user.uid;
+    setUser(cred.user);
+
+    // load user doc
+    const ud = await getDoc(doc(db, "users", uid));
+    if (!ud.exists()) {
+      notify("User record not found in Firestore (users collection)");
+      return;
+    }
+
+    const data = ud.data();
+
+    setRole(data.role || "");
+    const rolesArr = data.roles || (data.role ? [data.role] : []);
+    setRoles(rolesArr);
+
+    const has = (r) => rolesArr.includes(r) || data.role === r;
+
+    setName(data.name || "");
+    setMessage(
+      <>
+        Welcome {data.name || cred.user.email}
+        <br />
+        You are now logged in as {data.role}
+      </>
+    );
+
+    // load saved location
+    if (data.location) setUserSavedLocation(data.location);
+
+    // leader login
+    if (has("leader")) {
+      await loadAllUsers();
+    }
+
+    // admin login
+    if (has("admin")) {
+      await loadAllUsers();
+    }
+
+  } catch (err) {
+    notify("Login failed: " + err.message);
+  }
+};
+
+useEffect(() => {
+  if (!user || activeSidebar !== "my-att") return;
+  loadAttendance(user.uid);
+}, [user, activeSidebar]);
+
+useEffect(() => {
+  if (!user || activeSidebar !== "my-leave") return;
+
+  loadLeaves(user.uid);
+  loadOvertime(user.uid);
+}, [user, activeSidebar]);
+
+useEffect(() => {
+  if (!user || activeSidebar !== "my-panel") return;
+
+  loadAttendance(user.uid);
+  loadLeaves(user.uid);
+  loadPoReports(user.uid);
+  loadCompanyHolidaysForMonth(myCalendarMonth);
+}, [user, activeSidebar,myCalendarMonth]);
+
+useEffect(() => {
+  if (!user || activeSidebar !== "my-po") return;
+  loadAllUsers();
+  loadPoReports(user.uid);
+}, [user, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-att") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadAllAttendance();
+  })();
+}, [user, isAdmin, activeSidebar,attendanceMonth]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-att-overview") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadAllAttendance();
+    await loadAllLeaves();
+  })();
+}, [user, isAdmin, activeSidebar]);
+
+/* useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-leave") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadAllLeaves();
+  })();
+}, [user, isAdmin, activeSidebar]); */
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-leave") return;
+
+  (async () => {
+    if (Object.keys(usersMap || {}).length === 0) {
+      await loadAllUsers();
+    }
+
+    await loadAllLeaves();
+  })();
+}, [
+  user,
+  isAdmin,
+  activeSidebar,
+  showApprovedLeave,
+  showRejectedLeave,
+]);
+
+/* useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-ot") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadAllOvertime();
+  })();
+}, [user, isAdmin, activeSidebar]); */
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-ot") return;
+
+  (async () => {
+    if (Object.keys(usersMap || {}).length === 0) {
+      await loadAllUsers();
+    }
+
+    await loadAllOvertime();
+  })();
+}, [
+  user,
+  isAdmin,
+  activeSidebar,
+  showApprovedOT,
+  showRejectedOT,
+]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-po") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadAllPoReports();
+  })();
+}, [user, isAdmin, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-att-summary") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadAllAttendance();
+  })();
+}, [user, isAdmin, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-leave-balance") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadLeaveBalances();
+  })();
+}, [user, isAdmin, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-leave-summary") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadLeaveBalances();
+    await loadAllLeaves();
+  })();
+}, [user, isAdmin, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isLeader || activeSidebar !== "member-att-panel") return;
+
+  (async () => {
+    await loadAllUsers();
+    const ids = await loadLeaderMembers(user.uid);
+    await loadLeaderAttendance(ids);
+  })();
+}, [user, isLeader, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isLeader || activeSidebar !== "member-leave-panel") return;
+
+  (async () => {
+    await loadAllUsers();
+    const ids = await loadLeaderMembers(user.uid);
+    await loadLeaderLeaves(ids);
+  })();
+}, [user, isLeader, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isLeader || activeSidebar !== "member-ot-panel") return;
+
+  (async () => {
+    await loadAllUsers();
+    const ids = await loadLeaderMembers(user.uid);
+    await loadLeaderOvertime(ids);
+  })();
+}, [user, isLeader, activeSidebar]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-payroll") return;
+
+  (async () => {
+    await loadAllUsers();
+    await loadEmployees(); // optional, but good if PayrollCalculator uses employees too
+  })();
+}, [user, isAdmin, activeSidebar]);
+
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    setUser(null);
+    setRole("");
+    setName("");
+    setEmail("");
+    setPassword("");
+    setMessage("");
+    // clear state
+    setAttendance([]);
+    setLeaves([]);
+    setOvertimeReqs([]);
+    setAllAttendance([]);
+    setAllLeaves([]);
+    setAllOvertime([]);
+    setUsersMap({});
+  };
+
+  const handlePasswordReset = async () => {
+  if (!email) {
+    notify("Please enter your email first");
+    return;
+  }
+
+  try {
+    await sendPasswordResetEmail(auth, email);
+    notify("📧 Password reset email sent. Check your inbox.");
+  } catch (err) {
+    notify("❌ " + err.message);
+  }
+};
+
+
+
+
+  //Calculate Payroll and summary
+  const loadAllPayroll = async () => {
+  try {
+    const snap = await getDocs(collection(db, "payrollSummary"));
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // ✅ safe sort: handles missing createdAt
+    list.sort((a, b) => {
+      const da = a.createdAt ? new Date(a.createdAt) : new Date(0);
+      const db = b.createdAt ? new Date(b.createdAt) : new Date(0);
+      return db - da;
+    });
+
+    setAllPayroll(list);
+  } catch (err) {
+    console.error("❌ loadAllPayroll failed:", err);
+    notify("❌ Payroll Summary cannot load: " + err.message);
+  }
+};
+
+
+useEffect(() => {
+  if (isAdmin && activeSidebar === "admin-payroll-summary") {
+    loadAllPayroll();
+  }
+}, [activeSidebar, isAdmin]);
+
+
+ // loadMyPayslips
+
+ const loadMyPayslips = useCallback(async (uid = user?.uid) => {
+  
+  try {
+    if (!uid) return;
+
+    const q = query(
+      collection(db, "payslips"),
+      where("userId", "==", uid)
+    );
+
+    const snap = await getDocs(q);
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    list.sort((a, b) => {
+      const da = a.createdAt ? new Date(a.createdAt) : new Date(0);
+      const db = b.createdAt ? new Date(b.createdAt) : new Date(0);
+      return db - da;
+    });
+
+    setMyPayslips(list);
+  } catch (err) {
+    console.error("❌ loadMyPayslips failed:", err);
+    notify("❌ My Payslips cannot load: " + err.message);
+  }
+}, [user?.uid]);
+
+useEffect(() => {
+  if (user && activeSidebar === "my-payslip") {
+    loadMyPayslips(user.uid);
+  }
+},  [activeSidebar, user, loadMyPayslips]);
+ 
+
+
+  // PaySlip  Admin
+  const exportPayslip = (p) => {
+  const doc = new jsPDF("p", "mm", "a4");
+  doc.setFontSize(16);
+  doc.text("Simple 'Z Co.Ltd.", 105, 12, { align: "center" });
+
+  doc.setFontSize(12);
+  doc.text("Payslip", 105, 20, { align: "center" });
+
+  doc.setFontSize(10);
+  doc.text(`Name: ${p.name || ""}`, 14, 30);
+  doc.text(`Team: ${p.staffteam || ""}`, 14, 36);
+  doc.text(`Position: ${p.staffposition || ""}`, 14, 42);
+  doc.text(`Date: ${p.createdAt?.slice(0,10)}`, 150, 30);
+  doc.text(`For The Month of: ${p.month.slice(0,10)}`, 150, 35);
+
+  // Days Table
+  autoTable(doc, {
+  startY: 55,
+  head: [["Days", "Amount (MMK)"]],
+  body: [
+  [ "Working Days", p.standardDays?.toLocaleString() || 0],
+  [ "Attendance Days", p.workedDays?.toLocaleString() || 0],
+  [ "Working Hour", p.actualHours?.toLocaleString() || 0],
+  ],
+  theme: "striped",
+  styles: {
+  fontSize: 9,
+  },
+  columnStyles: {
+  0: { halign: "left",minCellWidth:50 },
+  1: { halign: "left" }, // Right-align second column (Amount)
+  },
+  headStyles: {
+  fillColor: [14, 165, 233], // same blue as your screenshot
+  textColor: [255, 255, 255],
+  halign: "left",
+  },
+
+  });
+
+
+  // Leaves Table
+  autoTable(doc, {
+  startY: doc.lastAutoTable.finalY + 10,
+  head: [["Leave", "Amount (MMK)"]],
+  body: [
+  [ "Annual Leave", p.annualLeave?.toLocaleString() || 0],
+  [ "Casual Leave", p.casualLeave?.toLocaleString() || 0],
+  [ "Abesent Days", p.absentDays?.toLocaleString() || 0],
+  [ "Medical Leave", p.sickLeave?.toLocaleString() || 0],
+  [ "Holiday work days", p.holidayWorkDays?.toLocaleString() || 0],
+  [ "Total Holiday days", p.holidayDays?.toLocaleString() || 0],
+  ],
+  theme: "striped",
+  styles: {
+  fontSize: 9,
+  },
+  columnStyles: {
+  0: { halign: "left",minCellWidth:50 },
+  1: { halign: "left" }, // Right-align second column (Amount)
+  },
+  headStyles: {
+  fillColor: [14, 165, 233], // same blue as your screenshot
+  textColor: [255, 255, 255],
+  halign: "left",
+  },
+
+  });
+
+  // Salary Table
+  autoTable(doc, {
+  startY: doc.lastAutoTable.finalY + 10,
+  head: [["Salary", "Amount (MMK)"]],
+  body: [
+  [ "Basic Salary (Latest)", p.basicLatest?.toLocaleString() || 0],
+  [ "Job Title Allowance", p.jobAllowance?.toLocaleString() || 0],
+  [ "Language Allowance (JLPT)", p.languageAllowance?.toLocaleString() || 0],
+  [ "Fixed Overtime", p.fixedOvertime?.toLocaleString() || 0],
+  [ "Work from Home", p.wfhAllowance?.toLocaleString() || 0],
+  [ "Net payment Amount", p.salaryTransfer?.toLocaleString() || 0],
+  ],
+  theme: "striped",
+  styles: {
+  fontSize: 9,
+  },
+  columnStyles: {
+  0: { halign: "left",minCellWidth:50 },
+  1: { halign: "left" }, // Right-align second column (Amount)
+  },
+  headStyles: {
+  fillColor: [14, 165, 233], // same blue as your screenshot
+  textColor: [255, 255, 255],
+  halign: "left",
+  },
+
+  });
+
+  // Deductions
+  autoTable(doc, {
+  startY: doc.lastAutoTable.finalY + 10,
+  head: [["Deductions", "Amount (MMK)"]],
+  body: [
+  ["Absence Deduction", p.absenceDeduction?.toLocaleString() || 0],
+  ["Late Deduction", p.lateDeduction?.toLocaleString() || 0],
+  ["SSB", p.ssb?.toLocaleString() || 0],
+  ["Income Tax", p.incomeTax?.toLocaleString() || 0],
+  ],
+  theme: "striped",
+  styles: {
+  fontSize: 9,
+  },
+  columnStyles: {
+  0: { halign: "left",minCellWidth:50 },
+  1: { halign: "left" }, // Right-align second column (Amount)
+  },
+  headStyles: {
+  fillColor: [14, 165, 233], // same blue as your screenshot
+  textColor: [255, 255, 255],
+  halign: "left",
+  },
+
+  });
+
+  // Net Pay
+  autoTable(doc, {
+  startY: doc.lastAutoTable.finalY + 10,
+  head: [["Special payment Amount", "Amount"]],
+  body: [
+  ["Rate", p.cbRate?.toLocaleString() || 0],
+  ["Preferential Rate Total", p.preferentialTotal?.toLocaleString() || 0],
+  ],
+  theme: "striped",
+  styles: {
+  fontSize: 9,
+  },
+  columnStyles: {
+  0: { halign: "left",minCellWidth:35 },
+  1: { halign: "left" }, // Right-align second column (Amount)
+  },
+  headStyles: {
+  fillColor: [14, 165, 233], // same blue as your screenshot
+  textColor: [255, 255, 255],
+  halign: "left",
+  },
+
+  });
+
+  doc.text("Payment Date: " + (p.createdAt?.slice(0,10) || ""), 14, doc.lastAutoTable.finalY + 20);
+  doc.text("Signature: ____________________", 150, doc.lastAutoTable.finalY + 20);
+
+  doc.save(`${p.name || "payslip"}.pdf`);
+  };
+
+
+  //Sendpayslip admin
+
+const sendPayslip = async (p) => {
+  
+  if (!p.userId) return notify("User ID missing");
+
+  await addDoc(collection(db, "payslips"), {
+    userId: p.userId,
+    payrollData: p,
+    paymonth: p.month,
+    status: "sent",
+    createdAt: new Date().toISOString()
+  });
+
+  await addDoc(collection(db, "notifications"), {
+    userId: p.userId,
+    type: "payslip",
+    title: "Payslip Available",
+    message: `Payslip for ${p.month} is ready`,
+    date: serverTimestamp(),
+    read: false,
+  });
+
+  notify(`Payslip sent to ${p.name}`);
+};
+
+const deletePayrollSummary = async (id) => {
+  try {
+    if (!id) return notify("Payroll record ID missing");
+    if (!window.confirm("Delete this payroll summary record?")) return;
+
+    await deleteDoc(doc(db, "payrollSummary", id));
+    notify("🗑 Payroll summary deleted");
+
+    loadAllPayroll();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Delete failed: " + err.message);
+  }
+};
+
+  /* ---------------- data loaders ---------------- */
+  
+  // Load all employees
+const loadEmployees = async () => {
+  try {
+    if (!auth.currentUser) return;
+
+    const q = query(
+      collection(db, "users"),
+      orderBy("eid", "asc")
+    );
+
+    const snap = await getDocs(q);
+
+    const list = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((u) => (u.employmentStatus || "active") !== "inactive");
+
+    setEmployees(list);
+  } catch (err) {
+    console.error("loadEmployees error:", err);
+  }
+};
+
+
+  // Delete employee
+    const deleteEmployee = async (id) => {
+      if (!window.confirm("Delete this employee?")) return;
+      await deleteDoc(doc(db, "users", id));
+      notify("🗑 Employee deleted");
+      loadEmployees();
+    };
+
+    useEffect(() => {
+    if (isAdmin) loadEmployees();
+  }, [role]);
+
+  const loadAttendance = async (uid) => {
+    const q = query(collection(db, "attendance"), where("userId", "==", uid));
+    const snap = await getDocs(q);
+
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    list.sort((a, b) => new Date(b.date) - new Date(a.date)); // ✅ newest first
+    setAttendance(list);
+  };
+
+  const loadLeaves = async (uid) => {
+    const q = query(collection(db, "leaves"), where("userId", "==", uid));
+    const snap = await getDocs(q);
+    
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    list.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));// ✅ newest first
+    setLeaves(list);
+  };
+
+  const loadOvertime = async (uid) => {
+    const q = query(collection(db, "overtimeRequests"), where("userId", "==", uid));
+    const snap = await getDocs(q);
+  
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    list.sort((a, b) => new Date(b.date) - new Date(a.date)); // ✅ newest first
+    setOvertimeReqs(list);
+  };
+
+  const loadAllPayslips = async () => {
+  const snap = await getDocs(collection(db, "payslips"));
+  setAllPayslips(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+};
+
+  //12/18
+  const loadAllUsers = async () => {
+    const snap = await getDocs(collection(db, "users"));
+    const map = {};
+    snap.forEach((docSnap) => {
+      const d = docSnap.data();
+
+      // ✅ KEY FIX: prefer authUid if stored
+      const key = d.authUid || docSnap.id;
+
+      map[key] = { id: key, ...d,
+        jobAllowance: Number(d.JobTitleAllowance || 0),
+        directorAllowance: Number(d.DirectorAllowance || 0),
+        languageAllowance: Number(d.LanguageAllowance || 0),
+      };
+    });
+    setUsersMap(map);
+  };
+
+  const loadAllAttendance = async () => {
+  const snap = await getDocs(collection(db, "attendance"));
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  list.sort((a, b) => new Date(b.date) - new Date(a.date));
+  setAllAttendance(list);
+};
+
+/*  const loadAllLeaves = async () => {
+    const snap = await getDocs(collection(db, "leaves"));
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    list.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+    setAllLeaves(list);
+  };
+ */
+
+  const loadAllLeaves = async () => {
+  const statuses = ["pending", "leader_approved"];
+
+  if (showApprovedLeave) statuses.push("approved");
+  if (showRejectedLeave) statuses.push("rejected");
+
+  const q = query(
+    collection(db, "leaves"),
+    where("status", "in", statuses)
+  );
+
+  const snap = await getDocs(q);
+
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  list.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+
+  setAllLeaves(list);
+};
+
+/*   const loadAllOvertime = async () => {
+    const snap = await getDocs(collection(db, "overtimeRequests"));
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    list.sort((a, b) => new Date(b.date) - new Date(a.date)); // ✅ newest first
+    setAllOvertime(list);
+  }; */
+
+  const loadAllOvertime = async () => {
+  const statuses = ["pending"];
+
+  if (showApprovedOT) statuses.push("approved");
+  if (showRejectedOT) statuses.push("rejected");
+
+  const q = query(
+    collection(db, "overtimeRequests"),
+    where("status", "in", statuses)
+  );
+
+  const snap = await getDocs(q);
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  list.sort((a, b) => new Date(b.date) - new Date(a.date));
+  setAllOvertime(list);
+};
+
+  // Add loaders for holidays (query by month range) 
+  const monthRange = (yyyyMm) => {
+  const [y, m] = yyyyMm.split("-").map(Number);
+  const first = new Date(y, m - 1, 1);
+  const last = new Date(y, m, 0);
+  const start = first.toISOString().slice(0, 10);
+  const end = last.toISOString().slice(0, 10);
+  return { start, end };
+  };
+
+
+
+
+  // ---------- Company Calendar (Holidays) ----------
+const [companyHolidays, setCompanyHolidays] = useState([]); // list of {id/date/name...}
+const [holidayMonth, setHolidayMonth] = useState(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // "YYYY-MM"
+});
+const [holidayDate, setHolidayDate] = useState(""); // "YYYY-MM-DD"
+const [holidayName, setHolidayName] = useState("");
+
+
+// Attendance Overview controls
+const [overviewLeaveUserId, setOverviewLeaveUserId] = useState("");
+const [overviewLeaveStart, setOverviewLeaveStart] = useState("");
+const [overviewLeaveEnd, setOverviewLeaveEnd] = useState("");
+const [overviewLeaveType, setOverviewLeaveType] = useState("Full Day");
+const [overviewLeaveName, setOverviewLeaveName] = useState("Casual Leave");
+const [overviewLeaveReason, setOverviewLeaveReason] = useState("");
+
+const [overviewMonth, setOverviewMonth] = useState(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+});
+const [overviewUserId, setOverviewUserId] = useState("");
+
+const adminCreateLeaveForStaff = async () => {
+  try {
+    if (
+      !overviewLeaveUserId ||
+      !overviewLeaveStart ||
+      !overviewLeaveEnd ||
+      !overviewLeaveReason
+    ) {
+      return notify("Please select staff, start date, end date and reason.");
+    }
+
+    const now = new Date().toISOString();
+
+    const newLeave = {
+      userId: overviewLeaveUserId,
+      startDate: overviewLeaveStart,
+      endDate: overviewLeaveEnd,
+      leaveType: overviewLeaveType,
+      leaveName: overviewLeaveName,
+      reason: overviewLeaveReason,
+    };
+
+    const units = calcLeaveUnits(newLeave);
+    const year = new Date(overviewLeaveStart).getFullYear();
+
+    await addDoc(collection(db, "leaves"), {
+      ...newLeave,
+
+      status: "approved",
+      leaderStatus: "skipped_by_admin",
+      adminStatus: "approved",
+
+      leaderActionBy: user.uid,
+      leaderActionAt: now,
+      adminActionBy: user.uid,
+      adminActionAt: now,
+
+      // important for refund when deleting
+      balanceDeducted: true,
+      balanceDeductedAt: now,
+      balanceDeductedUnits: units,
+      balanceRefunded: false,
+      balanceRefundedAt: null,
+      balanceRefundedUnits: null,
+
+      createdAt: now,
+      createdByAdmin: true,
+      createdBy: user.uid,
+    });
+
+    const balRef = doc(db, "leaveBalances", `${overviewLeaveUserId}_${year}`);
+    const balSnap = await getDoc(balRef);
+
+    const balData = balSnap.exists()
+      ? balSnap.data()
+      : { userId: overviewLeaveUserId, year, balances: {} };
+
+    const balances = { ...(balData.balances || {}) };
+    const typeObj = { ...(balances[overviewLeaveName] || {}) };
+
+    typeObj.taken = Number(typeObj.taken || 0) + Number(units);
+    balances[overviewLeaveName] = typeObj;
+
+    await setDoc(
+      balRef,
+      {
+        userId: overviewLeaveUserId,
+        year,
+        balances,
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+
+    notify("✅ Leave added by admin");
+    setOverviewLeaveUserId("");
+    setOverviewLeaveStart("");
+    setOverviewLeaveEnd("");
+    setOverviewLeaveType("Full Day");
+    setOverviewLeaveName("Casual Leave");
+    setOverviewLeaveReason("");
+
+    loadAllLeaves();
+    loadLeaveBalances(year);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot create leave: " + err.message);
+  }
+};
+
+
+  const loadCompanyHolidaysForMonth = async (yyyyMm) => {
+    try {
+      const { start, end } = monthRange(yyyyMm);
+      const q = query(
+        collection(db, "companyCalendar"),
+        where("date", ">=", start),
+        where("date", "<=", end),
+        orderBy("date", "asc")
+      );
+      const snap = await getDocs(q);
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setCompanyHolidays(rows);
+    } catch (err) {
+      console.error(err);
+      notify("❌ Cannot load company holidays: " + err.message);
+    }
+  };
+
+    useEffect(() => {
+    if (!isAdmin) return;
+    loadCompanyHolidaysForMonth(holidayMonth);
+  }, [isAdmin, holidayMonth]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    loadCompanyHolidaysForMonth(overviewMonth);
+  }, [isAdmin, overviewMonth]);
+
+  //Admin CRUD for Company Calendar
+ const adminAddOrUpdateHoliday = async () => {
+  try {
+    if (!holidayDate || !holidayName.trim()) {
+      notify("Please select date and enter holiday name.");
+      return;
+    }
+
+    // ✅ must be ISO "YYYY-MM-DD"
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(holidayDate)) {
+      notify("❌ Holiday date must be YYYY-MM-DD (please use date picker).");
+      return;
+    }
+
+    await setDoc(
+      doc(db, "companyCalendar", holidayDate),
+      {
+        date: holidayDate,
+        name: holidayName.trim(),
+        type: "holiday",
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+        createdBy: user?.uid || "",
+      },
+      { merge: true }
+    );
+
+    notify("✅ Holiday saved");
+    setHolidayName("");
+    loadCompanyHolidaysForMonth(holidayMonth);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot save holiday: " + err.message);
+  }
+};
+
+const adminDeleteHoliday = async (dateId) => {
+  try {
+    if (!window.confirm("Delete this holiday?")) return;
+    await deleteDoc(doc(db, "companyCalendar", dateId));
+    notify("🗑 Holiday deleted");
+    loadCompanyHolidaysForMonth(holidayMonth);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot delete holiday: " + err.message);
+  }
+};
+
+// Calendar builder + Attendance Overview mapping (FIXED: no timezone shift)
+  const buildCalendarCells = (yyyyMm) => {
+  const [y, m] = yyyyMm.split("-").map(Number);
+  const first = new Date(y, m - 1, 1);
+  const last = new Date(y, m, 0);
+
+  const startWeekday = first.getDay(); // 0 Sun .. 6 Sat
+  const totalDays = last.getDate();
+
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const toLocalDateStr = (d) =>
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+  const cells = [];
+
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+
+  for (let day = 1; day <= totalDays; day++) {
+    const dd = new Date(y, m - 1, day);
+    cells.push(toLocalDateStr(dd));
+  }
+
+  return cells;
+};
+
+const holidayMap = React.useMemo(() => {
+  const m = {};
+  (companyHolidays || []).forEach((h) => {
+    if (h?.date) m[h.date] = h;
+  });
+  return m;
+}, [companyHolidays]);
+
+const findAttendanceByUserAndDate = (uid, dateStr) => {
+  if (!uid || !dateStr) return null;
+  return (allAttendance || []).find((a) => a.userId === uid && a.date === dateStr) || null;
+};
+
+  // Calculate duration in hours and minutes
+  const calcPoDuration = (from, to) => {
+  const [fh, fm] = from.split(":").map(Number);
+  const [th, tm] = to.split(":").map(Number);
+  const totalMin = th * 60 + tm - (fh * 60 + fm);
+  if (totalMin <= 0) return "Invalid";
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h > 0 ? `${h}hr ` : ""}${m}min`;
+};
+
+// Add new P/O record
+const [editingPo, setEditingPo] = useState(null);
+const openEditPo = (row) => {
+  setEditingPo(row);
+  setPoDate(row.date || "");
+  setPoFrom(row.fromTime || "");
+  setPoTo(row.toTime || "");
+  setpoReason(row.POreason || "");
+};
+
+const addPoReport = async () => {
+  if (!poDate || !poFrom || !poTo || !poReason) return notify("Please fill all P/O fields.");
+  const totalTimeByHour = calcPoDuration(poFrom, poTo);
+  if (totalTimeByHour === "Invalid") return notify("Invalid time range.");
+  await addDoc(collection(db, "poReports"), {
+    userId: user.uid,
+    date: poDate,
+    fromTime: poFrom,
+    toTime: poTo,
+    POreason: poReason,
+    totalTimeByHour,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  });
+  notify("✅ P/O report added.");
+  setPoDate(""); setPoFrom(""); setPoTo("");setpoReason("");
+  loadPoReports(user.uid);
+};
+
+const updatePoReport = async () => {
+  try {
+    if (!editingPo) return;
+    if (!poDate || !poFrom || !poTo || !poReason) {
+      return notify("Please fill all P/O fields.");
+    }
+
+    const totalTimeByHour = calcPoDuration(poFrom, poTo);
+    if (totalTimeByHour === "Invalid") {
+      return notify("Invalid time range.");
+    }
+
+    await updateDoc(doc(db, "poReports", editingPo.id), {
+      date: poDate,
+      fromTime: poFrom,
+      toTime: poTo,
+      POreason: poReason,
+      totalTimeByHour,
+      updatedAt: new Date().toISOString(),
+    });
+
+    notify("✅ P/O updated");
+
+    setEditingPo(null);
+    setPoDate("");
+    setPoFrom("");
+    setPoTo("");
+    setpoReason("");
+
+    loadPoReports(user.uid);
+    if (isAdmin) loadAllPoReports();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Update failed: " + err.message);
+  }
+};
+
+// Load user’s P/O reports
+const loadPoReports = async (uid) => {
+  const q = query(collection(db, "poReports"), where("userId", "==", uid));
+  const snap = await getDocs(q);
+ /*  setPoList(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); */
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    list.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt));
+
+    setPoList(list);
+};
+
+// Load all P/O reports (for admin)
+const loadAllPoReports = async () => {
+  const snap = await getDocs(collection(db, "poReports"));
+  /* setAllPoList(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); */
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  list.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt));
+
+  setAllPoList(list);
+};
+
+const updatePoStatus = async (id, status) => {
+  await updateDoc(doc(db, "poReports", id), {
+    status,
+    actionBy: user.uid,
+    actionAt: new Date().toISOString(),
+  });
+
+  notify(`P/O ${status}`);
+  loadPoReports(user.uid);
+  if (isAdmin) loadAllPoReports();
+};
+
+const deletePoRequest = async (id) => {
+  try {
+    if (!window.confirm("Delete this P/O request?")) return;
+
+    await deleteDoc(doc(db, "poReports", id));
+    notify("🗑 P/O request deleted");
+
+    loadPoReports(user.uid);
+    if (isAdmin) loadAllPoReports();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Delete failed: " + err.message);
+  }
+};
+
+
+
+
+/* ---------------- geo-fence checking (safe) ---------------- */
+const checkLocationRange = async () => {
+  if (!user) return setWithinRange(false);
+  try {
+    const ud = await getDoc(doc(db, "users", user.uid));
+    const userData = ud.exists() ? ud.data() : {};
+    const mode = getAttendanceLocationModeValue(userData);
+    const saved = userData?.location || null;
+    setUserSavedLocation(saved || null);
+
+    if (mode === "disabled") {
+      setWithinRange(true);
+      return;
+    }
+
+    if (!saved) return setWithinRange(false);
+    if (!navigator.geolocation) return setWithinRange(mode === "optional");
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        const dist = getDistanceInMeters(
+          latitude,
+          longitude,
+          saved.latitude,
+          saved.longitude
+        );
+        console.log("Distance from saved location:", dist, "m");
+        setWithinRange(dist <= 100);
+      },
+      (err) => {
+        console.error("Geo check error", err);
+        setWithinRange(mode === "optional");
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  } catch (err) {
+    console.error("checkLocationRange error", err);
+    setWithinRange(false);
+  }
+};
+
+  // run periodic check when user is staff (or admin acting as staff)
+  useEffect(() => {
+    if (user && (role === "staff" || isAdmin)) {
+
+      checkLocationRange();
+     /*  const id = setInterval(checkLocationRange, 60000); */ // every 60s
+     const id = setInterval(checkLocationRange, 5 * 60 * 1000); //5–10 minutes
+      return () => clearInterval(id);
+    }
+    // if admin logged and viewing personal panel, we still allow manual checks via saveMyLocation and click
+  }, [user, role]);
+
+
+  /* ---------------- clock in / out (100m rule enforced) ---------------- */
+ // ---------------- Clock In / Out ----------------
+  const clockIn = async () => {
+  if (!user) return notify("Login required");
+
+  if (clockLoading) return; // prevent double click
+
+  setClockLoading(true);
+  clickSound.play();
+  notify("⏳ Recording Clock In...");
+
+  try {
+
+    const ud = await getDoc(doc(db, "users", user.uid));
+    const userData = ud.exists() ? ud.data() : {};
+
+    const locationMode = getAttendanceLocationModeValue(userData);
+    const locationResult = await getAttendanceLocationPayload(
+      userData,
+      locationMode,
+      "clock in"
+    );
+
+    if (!locationResult.allowed) {
+      setClockLoading(false);
+      return notify(locationResult.message);
+    }
+
+    const today = getTodayDateYangon();
+
+    const q = query(
+      collection(db, "attendance"),
+      where("userId", "==", user.uid),
+      where("date", "==", today)
+    );
+
+    const snap = await getDocs(q);
+
+    if (!snap.empty) {
+      setClockLoading(false);
+      return notify("⚠️ Already clocked in today.");
+    }
+
+    const now = new Date();
+
+    await addDoc(collection(db, "attendance"), {
+      userId: user.uid,
+      date: today,
+      clockIn: now.toISOString(),
+      serverClockIn: serverTimestamp(),
+      locationName: locationResult.locationName || "",
+      locationIn: locationResult.locationData,
+      attendanceLocationMode: locationMode,
+    });
+    successSound.play();
+
+    const successMsg = locationResult.locationName
+      ? `✅ Clock In recorded at ${locationResult.locationName}`
+      : locationMode === "disabled"
+      ? "✅ Clock In recorded without GPS."
+      : "✅ Clock In recorded. GPS was skipped.";
+
+    notify(successMsg);
+
+    loadAttendance(user.uid);
+   /*  if (isAdmin) loadAllAttendance(); */
+
+  } catch (err) {
+    console.error(err);
+    notify("❌ Clock In failed: " + err.message);
+  }
+
+  setClockLoading(false);
+};
+
+const clockOut = async () => {
+  if (!user) return notify("Login required");
+
+  if (clockLoading) return;
+
+  setClockLoading(true);
+  clickSound.play();
+  notify("⏳ Recording Clock Out...");
+
+  try {
+
+    const ud = await getDoc(doc(db, "users", user.uid));
+    const userData = ud.exists() ? ud.data() : {};
+
+    const locationMode = getAttendanceLocationModeValue(userData);
+
+    const locationResult = await getAttendanceLocationPayload(
+      userData,
+      locationMode,
+      "clock out"
+    );
+
+    if (!locationResult.allowed) {
+      setClockLoading(false);
+      return notify(locationResult.message);
+    }
+
+    const today = getTodayDateYangon();
+
+    const q = query(
+      collection(db, "attendance"),
+      where("userId", "==", user.uid),
+      where("date", "==", today)
+    );
+
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      setClockLoading(false);
+      return notify("⚠️ You haven't clocked in today.");
+    }
+
+    const attDoc = snap.docs[0];
+
+   const now = new Date();
+
+  await updateDoc(doc(db, "attendance", attDoc.id), {
+    clockOut: now.toISOString(),
+    serverClockOut: serverTimestamp(),
+    locationName:
+      locationResult.locationName || attDoc.data()?.locationName || "",
+    locationOut: locationResult.locationData,
+    attendanceLocationMode: locationMode,
+  });
+
+    successSound.play();
+
+    const successMsg = locationResult.locationName
+      ? `✅ Clock Out recorded at ${locationResult.locationName}`
+      : locationMode === "disabled"
+      ? "✅ Clock Out recorded without GPS."
+      : "✅ Clock Out recorded. GPS was skipped.";
+
+    notify(successMsg);
+
+    loadAttendance(user.uid);
+    if (isAdmin) loadAllAttendance();
+
+  } catch (err) {
+    console.error(err);
+    notify("❌ Clock Out failed: " + err.message);
+  }
+
+  setClockLoading(false);
+};
+
+
+  // attendance edit by admin
+  const [editingAttendance, setEditingAttendance] = useState(null);
+  const [editClockIn, setEditClockIn] = useState("");
+  const [editClockOut, setEditClockOut] = useState("");
+
+  const [creatingAttendance, setCreatingAttendance] = useState(false);
+  const [createUserId, setCreateUserId] = useState("");
+  const [createDate, setCreateDate] = useState(""); // YYYY-MM-DD
+  const [createIn, setCreateIn] = useState("");
+  const [createOut, setCreateOut] = useState("");
+  const [createLocationName, setCreateLocationName] = useState("");
+
+  const [bulkMonth, setBulkMonth] = useState(""); // "2026-02"
+  const [bulkWeekdaysOnly, setBulkWeekdaysOnly] = useState(true);
+  const [bulkOverwrite, setBulkOverwrite] = useState(false); // usually false
+
+
+  const openCreateAttendance = (prefillUserId = "", prefillDate = "") => {
+    setSelectedUserId(prefillUserId || "");
+    setCreateDate(prefillDate || "");
+    setCreateIn("");
+    setCreateOut("");
+    setCreateLocationName("");
+    setCreatingAttendance(true);
+  };
+
+  const openEditAttendance = (att) => {
+    setEditingAttendance(att);
+    setEditClockIn(att?.clockInTime || (att?.clockIn ? toMyanmarTime(att.clockIn) : ""));
+    setEditClockOut(att?.clockOutTime || (att?.clockOut ? toMyanmarTime(att.clockOut) : ""));
+  };
+
+  const [selectedUserId, setSelectedUserId] = useState("");
+
+  const adminCreateOrUpdateAttendance = async () => {
+  try {
+    // ✅ ONLY use selectedUserId + createDate
+    if (!selectedUserId || !createDate) {
+      notify("Select staff and date.");
+      return;
+    }
+
+    const clockInISO = createIn
+      ? makeISOFromDateAndTimeYangon(createDate, createIn)
+      : null;
+
+    const clockOutISO = createOut
+      ? makeISOFromDateAndTimeYangon(createDate, createOut)
+      : null;
+
+    // 1) Check if attendance doc already exists for that user/day
+    const q = query(
+      collection(db, "attendance"),
+      where("userId", "==", selectedUserId),
+      where("date", "==", createDate)
+    );
+
+    const snap = await getDocs(q);
+
+    if (!snap.empty) {
+      // ✅ Update existing doc
+      const existing = snap.docs[0];
+
+      await updateDoc(doc(db, "attendance", existing.id), {
+        clockIn: clockInISO,
+        clockInTime: createIn || null,
+        clockOut: clockOutISO,
+        clockOutTime: createOut || null,
+        locationName:
+          createLocationName || existing.data().locationName || "",
+        editedByAdmin: true,
+        editedAt: new Date().toISOString(),
+      });
+    } else {
+      // ✅ Create new doc (for forgotten day)
+      await addDoc(collection(db, "attendance"), {
+        userId: selectedUserId,
+        date: createDate,
+        clockIn: clockInISO,
+        clockInTime: createIn || null,
+        clockOut: clockOutISO,
+        clockOutTime: createOut || null,
+        locationName: createLocationName || "",
+        editedByAdmin: true,
+        editedAt: new Date().toISOString(),
+        createdByAdmin: true,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    notify("✅ Attendance saved");
+    setCreatingAttendance(false);
+    loadAllAttendance();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot save attendance: " + err.message);
+  }
+};
+
+  const getEmp = (uid) => usersMap?.[uid] || {};
+  const getEid = (uid) => getEmp(uid)?.eid || "";
+  const getEmpName = (uid) => getEmp(uid)?.name || displayUser(uid) || "";
+  const getEmpEmail = (uid) => getEmp(uid)?.email || "";
+
+    /* const filteredAttendance = (allAttendance || [])
+.filter((a) => {
+    if (!attendanceMonth) return true;
+    return (a.date || "").startsWith(attendanceMonth);
+  })
+  .filter((a) => {
+    const q = attendanceSearch.trim().toLowerCase();
+    if (!q) return true;
+
+    const uid = a.userId;
+    const hay = [
+      getEid(uid),
+      getEmpName(uid),
+      getEmpEmail(uid),
+      a.date || "",
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return hay.includes(q);
+  })
+
+  .sort((x, y) => (y.date || "").localeCompare(x.date || ""));
+ */
+
+  const filteredAttendance = (allAttendance || [])
+  .filter((a) => shouldShowRecordForUser(a.userId, a.date))
+  .filter((a) => {
+    if (!attendanceMonth) return true;
+    return (a.date || "").startsWith(attendanceMonth);
+  })
+  .filter((a) => {
+    const q = attendanceSearch.trim().toLowerCase();
+    if (!q) return true;
+
+    const uid = a.userId;
+    const hay = [
+      getEid(uid),
+      getEmpName(uid),
+      getEmpEmail(uid),
+      a.date || "",
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return hay.includes(q);
+  })
+  .sort((x, y) => (y.date || "").localeCompare(x.date || ""));
+
+  /*   const monthAttendance = (allAttendance || []).filter((a) =>
+  (a.date || "").startsWith(attendanceMonth)
+); */
+
+const monthAttendance = (allAttendance || []).filter(
+  (a) =>
+    (a.date || "").startsWith(attendanceMonth) &&
+    shouldShowRecordForUser(a.userId, a.date)
+);
+
+const monthlySummaryByUser = Object.keys(usersMap || {})
+  .map((uid) => {
+    const rows = monthAttendance.filter((a) => a.userId === uid);
+
+    const presentDays = rows.length;
+    const missingClockIn = rows.filter((r) => !r.clockIn).length;
+    const missingClockOut = rows.filter((r) => !r.clockOut).length;
+
+    return {
+      uid,
+      eid: usersMap?.[uid]?.eid || "",
+      name: usersMap?.[uid]?.name || displayUser(uid) || "",
+      presentDays,
+      missingClockIn,
+      missingClockOut,
+    };
+  })
+
+  // sort by employee id order
+  .sort((a, b) => (a.eid || "").localeCompare(b.eid || ""));
+
+  const makeISOFromDateAndTimeYangon = (dateStr, timeStr) => {
+  if (!dateStr || !timeStr) return null;
+  const dt = new Date(`${dateStr}T${timeStr}:00`);
+  return new Date(dt.toLocaleString("en-US", { timeZone: "Asia/Yangon" })).toISOString();
+};
+
+const adminUpdateAttendanceTime = async () => {
+  if (!editingAttendance) return;
+
+  try {
+    const clockInISO = editClockIn
+      ? makeISOFromDateAndTimeYangon(editingAttendance.date, editClockIn)
+      : null;
+
+    const clockOutISO = editClockOut
+      ? makeISOFromDateAndTimeYangon(editingAttendance.date, editClockOut)
+      : null;
+
+    await updateDoc(doc(db, "attendance", editingAttendance.id), {
+      clockIn: clockInISO,
+      clockInTime: editClockIn || null,
+      clockOut: clockOutISO,
+      clockOutTime: editClockOut || null,
+      editedByAdmin: true,
+      editedAt: new Date().toISOString(),
+   });
+
+
+    notify("✅ Attendance updated manually");
+    setEditingAttendance(null);
+    setEditClockIn("");
+    setEditClockOut("");
+
+    loadAllAttendance();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot update attendance: " + err.message);
+  }
+};
+
+/* Attendance manual edit for 1month by admin */ 
+  const getDatesInMonth = (yyyyMm, weekdaysOnly) => {
+  const [y, m] = yyyyMm.split("-").map(Number);
+  const first = new Date(y, m - 1, 1);
+  const last = new Date(y, m, 0);
+
+  const out = [];
+  for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
+    const day = d.getDay(); // 0 Sun ... 6 Sat
+    if (weekdaysOnly && (day === 0 || day === 6)) continue;
+
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    out.push(`${yyyy}-${mm}-${dd}`);
+  }
+  return out;
+};
+
+const adminBulkCreateMonthAttendance = async () => {
+  try {
+    if (!selectedUserId || !bulkMonth) {
+      notify("Select employee and month.");
+      return;
+    }
+
+    const dates = getDatesInMonth(bulkMonth, bulkWeekdaysOnly);
+
+    const batch = writeBatch(db);
+    let createdCount = 0;
+    let skippedCount = 0;
+
+    for (const dateStr of dates) {
+      const dayIndex = new Date(`${dateStr}T00:00:00`).getDay();
+      const isWeekend = dayIndex === 0 || dayIndex === 6;
+
+      // check holiday
+      const holidayRef = doc(db, "companyCalendar", dateStr);
+      const holidaySnap = await getDoc(holidayRef);
+      const isHoliday = holidaySnap.exists();
+
+      // ❗ skip weekend & holiday
+      if (isWeekend || isHoliday) {
+        skippedCount++;
+        continue;
+      }
+
+      const docId = `${selectedUserId}_${dateStr}`;
+      const ref = doc(db, "attendance", docId);
+
+      const existsSnap = await getDoc(ref);
+
+      if (existsSnap.exists() && !bulkOverwrite) {
+        skippedCount++;
+        continue;
+      }
+
+      const existing = existsSnap.exists() ? existsSnap.data() : {};
+
+      const clockInISO =
+        existing.clockIn || !createIn
+          ? existing.clockIn || null
+          : makeISOFromDateAndTimeYangon(dateStr, createIn);
+
+      const clockOutISO =
+        existing.clockOut || !createOut
+          ? existing.clockOut || null
+          : makeISOFromDateAndTimeYangon(dateStr, createOut);
+
+     /*  const clockInISO = createIn
+        ? makeISOFromDateAndTimeYangon(dateStr, createIn)
+        : null;
+
+      const clockOutISO = createOut
+        ? makeISOFromDateAndTimeYangon(dateStr, createOut)
+        : null; */
+
+      batch.set(
+        ref,
+        {
+          userId: selectedUserId,
+          date: dateStr,
+          clockIn: clockInISO,
+          clockInTime: createIn || null,
+          clockOut: clockOutISO,
+          clockOutTime: createOut || null,
+          locationName: createLocationName || "",
+          createdByAdmin: true,
+          editedByAdmin: true,
+          createdAt: serverTimestamp(),
+          editedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      createdCount++;
+    }
+
+    await batch.commit();
+
+    notify(`✅ Bulk done. Created/updated: ${createdCount}, Skipped: ${skippedCount}`);
+    setCreatingAttendance(false);
+    loadAllAttendance();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot bulk add: " + err.message);
+  }
+};
+
+//attendance delete by admin
+
+// delete single day
+const adminDeleteAttendance = async () => {
+  try {
+    if (!editingAttendance?.id) {
+      notify("No attendance selected.");
+      return;
+    }
+
+    if (!window.confirm("Delete this attendance record?")) return;
+
+    await deleteDoc(doc(db, "attendance", editingAttendance.id));
+
+    notify("🗑 Attendance deleted");
+    setEditingAttendance(null);
+    loadAllAttendance();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Delete failed: " + err.message);
+  }
+};
+
+
+//delete whole month
+const adminDeleteMonthAttendance = async () => {
+  try {
+    if (!selectedUserId || !bulkMonth) {
+      notify("Select employee and month.");
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Delete ALL attendance for ${displayUser(selectedUserId)} in ${bulkMonth}?`
+      )
+    ) {
+      return;
+    }
+
+    // ✅ Only ONE where => no composite index needed
+    const q = query(
+      collection(db, "attendance"),
+      where("userId", "==", selectedUserId)
+    );
+
+    const snap = await getDocs(q);
+
+    // ✅ filter month on client side (bulkMonth = "YYYY-MM")
+    const docsToDelete = snap.docs.filter((d) =>
+      (d.data()?.date || "").startsWith(bulkMonth)
+    );
+
+    if (docsToDelete.length === 0) {
+      notify("No attendance found for that month.");
+      return;
+    }
+
+    // ✅ batch delete (limit 500, month is safe)
+    const batch = writeBatch(db);
+    docsToDelete.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+
+    notify(`🗑 Deleted ${docsToDelete.length} attendance records`);
+    loadAllAttendance();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Delete failed: " + err.message);
+  }
+};
+
+//show leave name and type in all staff attendance table
+const LEAVE_TYPE_ABBR = {
+  "annual leave": "AL",
+  "casual leave": "CL",
+  "medical leave": "MeL",
+  "maternity leave": "MaL",
+  "unpaid leave": "WL",
+  "without pay leave": "WL",
+};
+
+
+const getLeaveDayAbbr = (leave) => {
+  // try many possible field names (use whichever exists in your leave docs)
+  const raw =
+    leave.dayType ??
+    leave.leaveType ??
+    leave.leaveTime ??
+    leave.duration ??
+    leave.session ??
+    leave.type ??
+    "Full Day";
+
+  const t = String(raw).trim().toLowerCase().replace(/\s+/g, " ");
+
+  // morning half
+  if (t.includes("morning")) return "AML";
+
+  // evening / afternoon half
+  if (t.includes("evening") || t.includes("afternoon")) return "PML";
+
+  // full day (default)
+  return "FL";
+};
+
+
+const getLeaveAbbreviationForDate = (userId, date) => {
+  const leave = allLeaves.find((l) => {
+    if (l.userId !== userId) return false;
+    if (l.status !== "approved") return false;
+
+    const d = new Date(date);
+    const start = new Date(l.startDate);
+    const end = new Date(l.endDate);
+
+    return d >= start && d <= end;
+  });
+
+  if (!leave) return "";
+
+  const typeAbbr = LEAVE_TYPE_ABBR[(leave.leaveName || "").toLowerCase().trim()] || "";
+  const dayAbbr = getLeaveDayAbbr(leave);
+
+  return `${dayAbbr}/${typeAbbr}`;
+};
+
+
+const resetFilters = () => {
+  setNameFilter("");
+  setDeptFilter("");
+  setDateFilter("");
+  setFromDate("");
+  setToDate("");
+  setShowApprovedLeave(false);
+  setShowRejectedLeave(false);
+  setShowApprovedOT(false);
+  setShowRejectedOT(false);
+};
+
+const resetAttendanceFilters = () => {
+  setAttendanceNameFilter("");
+  setAttendanceMonthFilter(getCurrentMonth());
+};
+
+const resetLeaveFilters = () => {
+  setLeaveNameFilter("");
+  setLeaveFromDate("");
+  setLeaveToDate("");
+};
+
+const resetOTFilters = () => {
+  setOtNameFilter("");
+  setOtMonthFilter(getCurrentMonth());
+};
+
+const safe = (v) => (v || "").toString().toLowerCase();
+
+const getCurrentMonth = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+};
+
+const [monthFilter, setMonthFilter] = useState(getCurrentMonth());
+const [attendanceMonthFilter, setAttendanceMonthFilter] = useState(getCurrentMonth());
+const [otMonthFilter, setOtMonthFilter] = useState(getCurrentMonth());
+
+const [poSearch, setPoSearch] = useState("");
+const [poDeptFilter, setPoDeptFilter] = useState("");
+const [poMonthFilter, setPoMonthFilter] = useState(getCurrentMonth());
+
+const [myAttendanceMonth, setMyAttendanceMonth] = useState(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+});
+
+const filteredMyAttendance = (attendance || []).filter((a) =>
+  myAttendanceMonth ? (a.date || "").startsWith(myAttendanceMonth) : true
+);
+
+const [myLeaveMonth, setMyLeaveMonth] = useState(() => getCurrentMonth());
+const [myOtMonth, setMyOtMonth] = useState(() => getCurrentMonth());
+const [myPOMonth, setMyPOMonth] = useState(() => getCurrentMonth());
+
+const filteredMyLeaves = (leaves || []).filter((l) =>
+  myLeaveMonth ? (l.startDate || "").startsWith(myLeaveMonth) : true
+);
+
+const filteredMyOvertime = (overtimeReqs || []).filter((ot) =>
+  myOtMonth ? (ot.date || "").startsWith(myOtMonth) : true
+);
+
+const filteredMyPO = (poList || []).filter((p) =>
+  myPOMonth ? (p.date || "").startsWith(myPOMonth) : true
+);
+
+const filteredMemberAttendance = leaderAttendance.filter(row => {
+  const name = usersMap[row.userId]?.name;
+  const matchName = safe(name).includes(safe(attendanceNameFilter));
+
+  const matchMonth =
+    attendanceMonthFilter === "" || row.date.startsWith(attendanceMonthFilter);
+
+  return matchName && matchMonth;
+});
+
+const filteredMemberLeaves = leaderLeaves.filter(row => {
+  // ---------- Name filter ----------
+  const name = usersMap[row.userId]?.name;
+  const matchName = safe(name).includes(safe(leaveNameFilter));
+
+  // ---------- Date range filter ----------
+  if (!leaveFromDate && !leaveToDate) return matchName;
+
+  const rowStart = new Date(row.startDate);
+  const rowEnd = new Date(row.endDate);
+  const filterFrom = leaveFromDate ? new Date(leaveFromDate) : null;
+  const filterTo = leaveToDate ? new Date(leaveToDate) : null;
+
+  // overlap logic
+  if (filterFrom && rowEnd < filterFrom) return false;
+  if (filterTo && rowStart > filterTo) return false;
+
+  return matchName;
+});
+
+const filteredMemberOT = leaderOvertime.filter(row => {
+  const name = usersMap[row.userId]?.name;
+  const matchName = safe(name).includes(safe(otNameFilter));
+
+  const matchMonth =
+    otMonthFilter === "" || row.date.startsWith(otMonthFilter);
+
+  return matchName && matchMonth;
+});
+
+const filteredAllMemberLeaves = allLeaves.filter((row) => {
+  if (!shouldShowRecordForUser(row.userId, row.startDate)) return false;
+  const name = usersMap[row.userId]?.name;
+  const matchName = safe(name).includes(safe(nameFilter));
+  const dept = usersMap[row.userId]?.department || "";
+  const matchDept = !deptFilter || dept === deptFilter;
+  
+
+  // ---------- Date range overlap ----------
+  const rowStart = new Date(row.startDate);
+  const rowEnd = new Date(row.endDate);
+  const filterFrom = fromDate ? new Date(fromDate) : null;
+  const filterTo = toDate ? new Date(toDate) : null;
+
+  if (filterFrom && rowEnd < filterFrom) return false;
+  if (filterTo && rowStart > filterTo) return false;
+
+  // ---------- Status filter ----------
+  const s = (row.status || "pending").toLowerCase();
+
+  // Default table shows only "pending-like"
+  // If you have 2-step approval, admin pending list should include "leader_approved" too.
+  const allowed = new Set(["pending", "leader_approved"]);
+
+  if (showApprovedLeave) allowed.add("approved");
+  if (showRejectedLeave) allowed.add("rejected");
+
+  const matchStatus = allowed.has(s);
+
+  return matchName && matchDept && matchStatus;
+});
+
+
+useEffect(() => {
+  const today = new Date().toISOString().slice(0, 10);
+  setFromDate(today);
+  setToDate(today);
+}, []);
+
+const filteredAllMemberOT = allOvertime.filter((row) => {
+   if (!shouldShowRecordForUser(row.userId, row.startDate)) return false;
+  const name = usersMap[row.userId]?.name;
+  const matchName = safe(name).includes(safe(nameFilter));
+
+  const matchDate = dateFilter === "" || row.date === dateFilter;
+
+  const s = (row.status || "pending").toLowerCase();
+
+  const allowed = new Set(["pending"]);
+  if (showApprovedOT) allowed.add("approved");
+  if (showRejectedOT) allowed.add("rejected");
+
+  return matchName && matchDate && allowed.has(s);
+});
+
+const filteredAllPoReports = allPoList.filter((row) => {
+  const u = usersMap[row.userId] || {};
+
+  const matchName = safe(u.name).includes(safe(poSearch));
+  const matchDept = !poDeptFilter || u.department === poDeptFilter;
+  const matchMonth =
+    !poMonthFilter || (row.date || "").startsWith(poMonthFilter);
+
+  return matchName && matchDept && matchMonth;
+});
+
+const leaderUpdateAttendanceTime = async () => {
+  if (!editingLeaderAttendance) return;
+
+  try {
+    const clockInISO = leaderEditIn
+      ? makeISOFromDateAndTimeYangon(editingLeaderAttendance.date, leaderEditIn)
+      : null;
+
+    const clockOutISO = leaderEditOut
+      ? makeISOFromDateAndTimeYangon(editingLeaderAttendance.date, leaderEditOut)
+      : null;
+
+    await updateDoc(doc(db, "attendance", editingLeaderAttendance.id), {
+      clockIn: clockInISO,
+      clockInTime: leaderEditIn || null,
+      clockOut: clockOutISO,
+      clockOutTime: leaderEditOut || null,
+      editedByLeader: user.uid,
+      editedAt: new Date().toISOString(),
+    });
+
+    notify("✅ Attendance updated by Leader");
+
+    // ✅ Update local list instead of reload
+    setLeaderAttendance(prev =>
+      prev.map(item =>
+        item.id === editingLeaderAttendance.id
+          ? {
+              ...item,
+              clockIn: clockInISO,
+              clockInTime: leaderEditIn || null,
+              clockOut: clockOutISO,
+              clockOutTime: leaderEditOut || null,
+              editedByLeader: user.uid,
+              editedAt: new Date().toISOString(),
+            }
+          : item
+      )
+    );
+
+    setEditingLeaderAttendance(null);
+    setLeaderEditIn("");
+    setLeaderEditOut("");
+
+
+    //loadLeaderAttendance(); // reload leader list
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot update attendance: " + err.message);
+  }
+};
+
+//leave edit by admin
+  const [leaveBalances, setLeaveBalances] = useState({});
+  const currentYear = new Date().getFullYear();
+
+  const leaveTypes = ["Annual Leave", "Casual Leave", "Medical Leave"];
+  const [selectedLeaveTypeByUser, setSelectedLeaveTypeByUser] = useState({});
+
+  const getBalanceValue = (uid, type, field) => {
+    return leaveBalances?.[uid]?.balances?.[type]?.[field] ?? 0;
+  };
+
+  const getBal = (uid, type, field) =>
+  leaveBalances?.[uid]?.balances?.[type]?.[field] ?? 0;
+
+
+  const loadLeaveBalances = async (year = currentYear) => {
+    const snap = await getDocs(
+      query(collection(db, "leaveBalances"), where("year", "==", year))
+    );
+
+    const map = {};
+    snap.forEach(d => {
+      map[d.data().userId] = d.data();
+    });
+
+    setLeaveBalances(map);
+  };
+
+
+  const summaryLeaveTypes = ["Casual Leave", "Annual Leave", "Medical Leave","WithoutPay Leave", "Maternity Leave",];
+  const saveLeaveBalance = async (uid) => {
+    const data = leaveBalances[uid];
+    if (!data) return;
+
+    await setDoc(
+      doc(db, "leaveBalances", `${uid}_${currentYear}`),
+      {
+        userId: uid,
+        year: currentYear,
+        balances: data.balances,
+        updatedAt: new Date().toISOString()
+      },
+      { merge: true }
+    );
+    await loadLeaveBalances();  // reload whole map
+
+    notify("✅ Leave balance saved");
+  };
+
+
+  useEffect(() => {
+  if (!user) return;
+
+  // listen to MY leave balance doc in realtime
+  const ref = doc(db, "leaveBalances", `${user.uid}_${currentYear}`);
+
+  const unsub = onSnapshot(ref, (snap) => {
+    if (snap.exists()) {
+      const data = snap.data();
+
+      // merge into leaveBalances map
+      setLeaveBalances((prev) => ({
+        ...prev,
+        [user.uid]: data,
+      }));
+    } else {
+      // if no doc yet, clear my entry (optional)
+      setLeaveBalances((prev) => {
+        const copy = { ...prev };
+        delete copy[user.uid];
+        return copy;
+      });
+    }
+  });
+
+  return () => unsub();
+}, [user?.uid, currentYear]);
+
+
+// ---------------- My panel dashboard ----------------
+
+const todayStr = getTodayDateYangon();
+const currentMonthStr = todayStr.slice(0, 7);
+
+
+
+const [selectedCalendarDate, setSelectedCalendarDate] = useState(() =>
+  getTodayDateYangon()
+);
+
+const todayAttendance =
+  attendance.find((a) => a.date === todayStr) || null;
+
+const todayClockIn = todayAttendance?.clockIn
+  ? formatTimeByViewMode(todayAttendance.clockIn)
+  : (todayAttendance?.clockInTime || "--:--");
+
+const todayClockOut = todayAttendance?.clockOut
+  ? formatTimeByViewMode(todayAttendance.clockOut)
+  : (todayAttendance?.clockOutTime || "--:--");
+
+const attendanceStatus = todayAttendance
+  ? todayAttendance.clockOut
+    ? "Checked Out"
+    : "Checked In"
+  : "Not Checked In";
+
+const toMinutes = (timeStr) => {
+  if (!timeStr || timeStr === "-") return null;
+  const [h, m] = timeStr.split(":").map(Number);
+  return h * 60 + m;
+};
+
+const getTimeViewLabel = (mode) => {
+  if (mode === "myanmar") return "Myanmar Time";
+  if (mode === "gmt") return "GMT / UTC";
+  return "My Local Time";
+};
+
+const isMorningHalfLeaveOnDate = (dateStr) => {
+  return leaves.some((l) => {
+    if (String(l.status || "").toLowerCase() !== "approved") return false;
+    if (l.startDate !== dateStr || l.endDate !== dateStr) return false;
+
+    const t = String(l.leaveType || "").trim().toLowerCase();
+    return t === "morning half";
+  });
+};
+
+const isEveningHalfLeaveOnDate = (dateStr) => {
+  return leaves.some((l) => {
+    if (String(l.status || "").toLowerCase() !== "approved") return false;
+    if (l.startDate !== dateStr || l.endDate !== dateStr) return false;
+
+    const t = String(l.leaveType || "").trim().toLowerCase();
+    return t === "evening half";
+  });
+};
+
+const monthAttendanceRows = attendance.filter(
+  (a) => (a.date || "").startsWith(currentMonthStr)
+);
+
+const monthPresentDays = monthAttendanceRows.length;
+
+const LATE_LIMIT = 8 * 60;       // 08:00
+const EARLY_OUT_LIMIT = 17 * 60; // 17:00
+
+
+/* Filter current user's attendance for that month */
+const myMonthAttendance = attendance.filter(
+  (a) => (a.date || "").startsWith(myCalendarMonth)
+);
+
+const myAttendanceMap = React.useMemo(() => {
+  const map = {};
+  myMonthAttendance.forEach((row) => {
+    map[row.date] = row;
+  });
+  return map;
+}, [myMonthAttendance]);
+
+/* Build calendar cells for selected month */
+const myCalendarCells = React.useMemo(
+  () => buildCalendarCells(myCalendarMonth),
+  [myCalendarMonth]
+);
+
+const monthEarlyOutCount = monthAttendanceRows.filter((a) => {
+  if (isEveningHalfLeaveOnDate(a.date)) return false;
+  return isEarlyOutByYangonTime(a.clockOut);
+}).length;
+
+const approvedLeavesThisMonth = leaves.filter((l) => {
+  if (String(l.status || "").toLowerCase() !== "approved") return false;
+
+  const start = l.startDate || "";
+  const end = l.endDate || "";
+
+  return (
+    start.startsWith(currentMonthStr) ||
+    end.startsWith(currentMonthStr) ||
+    (start < `${currentMonthStr}-31` && end >= `${currentMonthStr}-01`)
+  );
+});
+
+const monthLeaveDays = approvedLeavesThisMonth.reduce((sum, l) => {
+  const start = new Date(l.startDate);
+  const end = new Date(l.endDate);
+  const days = Math.max(
+    0,
+    (end - start) / (1000 * 60 * 60 * 24) + 1
+  );
+
+  const isHalf = String(l.leaveType || "").toLowerCase().includes("half");
+  return sum + (isHalf ? 0.5 : days);
+}, 0);
+
+const leaveSummaryRows = [
+  { key: "Casual Leave", hasCarry: false },
+  { key: "Annual Leave", hasCarry: true },
+  { key: "Medical Leave", hasCarry: false },
+  { key: "WithoutPay Leave", hasCarry: false },
+  { key: "Maternity Leave", hasCarry: false },
+].map((item) => {
+  const type = item.key;
+
+  const base = Number(leaveBalances?.[user?.uid]?.balances?.[type]?.base ?? 0);
+  const carry = item.hasCarry
+    ? Number(leaveBalances?.[user?.uid]?.balances?.[type]?.carry ?? 0)
+    : 0;
+
+  const taken = Number(leaveBalances?.[user?.uid]?.balances?.[type]?.taken ?? 0);
+
+  const balance = Math.max(0, base + carry - taken);
+
+  return {
+    leaveName: type,
+    taken,
+    balance,
+  };
+});
+
+const getGreeting = () => {
+  const hour = new Date().getHours();
+
+  if (hour < 12) return "Good Morning";
+  if (hour < 17) return "Good Afternoon";
+  if (hour < 21) return "Good Evening";
+  return "Good Night";
+};
+
+/* new montly calendar dashboard */
+
+useEffect(() => {
+  if (!selectedCalendarDate.startsWith(myCalendarMonth)) {
+    const firstRealDay = myCalendarCells.find(Boolean);
+    if (firstRealDay) setSelectedCalendarDate(firstRealDay);
+  }
+}, [myCalendarMonth, myCalendarCells, selectedCalendarDate]);
+
+
+const selectedDayAttendance = myAttendanceMap[selectedCalendarDate] || null;
+const selectedDayHoliday = holidayMap[selectedCalendarDate] || null;
+
+const selectedDayLeaves = leaves.filter((l) => {
+  if ((l.status || "").toLowerCase() !== "approved") return false;
+  return selectedCalendarDate >= l.startDate && selectedCalendarDate <= l.endDate;
+});
+
+const selectedDayWeekday = new Date(`${selectedCalendarDate}T00:00:00`).toLocaleDateString(
+  "en-US",
+  { weekday: "long", month: "long", day: "2-digit",year:"numeric" }
+);
+
+const selectedDayIsLate =
+  selectedDayAttendance?.clockIn &&
+  !isMorningHalfLeaveOnDate(selectedCalendarDate)
+    ? isLateByYangonTime(selectedDayAttendance.clockIn)
+    : false;
+
+const selectedDayIsEarlyOut =
+  selectedDayAttendance?.clockOut &&
+  !isEveningHalfLeaveOnDate(selectedCalendarDate)
+    ? isEarlyOutByYangonTime(selectedDayAttendance.clockOut)
+    : false;
+
+const isAnyHalfLeaveOnDate = (dateStr) => {
+  return leaves.some((l) => {
+    if (String(l.status || "").toLowerCase() !== "approved") return false;
+    if (l.startDate !== dateStr || l.endDate !== dateStr) return false;
+
+    const t = String(l.leaveType || "").trim().toLowerCase();
+    return t.includes("half");
+  });
+};
+
+const monthLateCount = monthAttendanceRows.filter((a) => {
+  if (isAnyHalfLeaveOnDate(a.date)) return false;
+  return isLateByYangonTime(a.clockIn);
+}).length;
+
+const selectedDayIndex = new Date(`${selectedCalendarDate}T00:00:00`).getDay();
+const selectedDayIsWeekend = selectedDayIndex === 0 || selectedDayIndex === 6;
+const selectedDayIsHoliday = !!selectedDayHoliday;
+
+const selectedDayHasIn = !!selectedDayAttendance?.clockIn;
+const selectedDayHasOut = !!selectedDayAttendance?.clockOut;
+
+const selectedDayIsOffDay = selectedDayIsWeekend || selectedDayIsHoliday;
+
+const selectedDayIsAbsentHalf =
+  !selectedDayIsOffDay &&
+  selectedDayAttendance &&
+  (!selectedDayHasIn || !selectedDayHasOut) &&
+  !( !selectedDayHasIn && !selectedDayHasOut );
+
+const selectedDayIsAbsentFull =
+  !selectedDayIsOffDay &&
+  !selectedDayHasIn &&
+  !selectedDayHasOut;
+ 
+   // ---------------- Admin: Save Two Locations ----------------
+   const saveEmployeeLocations = async (emp) => {
+     if (!emp.locations || emp.locations.length !== 2) return notify("Please fill both locations.");
+     await updateDoc(doc(db, "users", emp.id), { locations: emp.locations });
+     notify("✅ Locations saved successfully.");
+     loadAllUsers();
+   };
+
+   const saveEmployeeGpsSetting = async (emp) => {
+     try {
+       const attendanceLocationMode = getAttendanceLocationModeValue(emp);
+       await updateDoc(doc(db, "users", emp.id), { attendanceLocationMode });
+       notify("✅ GPS setting saved successfully.");
+       loadEmployees();
+       loadAllUsers();
+     } catch (err) {
+       console.error(err);
+       notify("❌ Cannot save GPS setting: " + err.message);
+     }
+   };
+
+   const getGeoPosition = () =>
+     new Promise((resolve, reject) => {
+       if (!navigator.geolocation) {
+         reject(new Error("Geolocation not supported."));
+         return;
+       }
+
+       navigator.geolocation.getCurrentPosition(
+         (pos) => resolve(pos),
+         (err) => reject(err),
+         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+       );
+     });
+
+   const getAttendanceLocationPayload = async (userDocData, mode, actionLabel) => {
+     const normalizedMode = getAttendanceLocationModeValue({ attendanceLocationMode: mode });
+     const locations = userDocData?.locations || [];
+
+     if (normalizedMode === "disabled") {
+       return {
+         allowed: true,
+         locationName: "",
+         locationData: null,
+       };
+     }
+
+     if (!navigator.geolocation) {
+       if (normalizedMode === "optional") {
+         return {
+           allowed: true,
+           locationName: "",
+           locationData: null,
+         };
+       }
+
+       return {
+         allowed: false,
+         message: "Geolocation not supported.",
+       };
+     }
+
+     if (!locations || locations.length === 0) {
+       if (normalizedMode === "optional") {
+         return {
+           allowed: true,
+           locationName: "",
+           locationData: null,
+         };
+       }
+
+       return {
+         allowed: false,
+         message: "No saved locations. Ask admin to add them.",
+       };
+     }
+
+     try {
+       const pos = await getGeoPosition();
+       const { latitude, longitude } = pos.coords;
+       const matchedName = isWithinRangeOfAny(latitude, longitude, locations);
+
+       if (!matchedName && normalizedMode === "required") {
+         return {
+           allowed: false,
+           message: `🚫 Too far from any registered location for ${actionLabel}.`,
+         };
+       }
+
+       if (!matchedName && normalizedMode === "optional") {
+         return {
+           allowed: true,
+           locationName: "",
+           locationData: null,
+         };
+       }
+
+       return {
+         allowed: true,
+         locationName: matchedName || "",
+         locationData: matchedName ? { latitude, longitude } : null,
+       };
+     } catch (err) {
+       if (normalizedMode === "optional") {
+         return {
+           allowed: true,
+           locationName: "",
+           locationData: null,
+         };
+       }
+
+       return {
+         allowed: false,
+         message: "Unable to get location: " + err.message,
+       };
+     }
+   };
+
+  /* ---------------- leave & overtime (staff) ---------------- */
+  const applyLeave = async () => {
+    if (!leaveStart || !leaveEnd || !leaveReason) return notify("Please fill leave start, end and reason.");
+    await addDoc(collection(db, "leaves"), {
+      userId: user.uid,
+      startDate: leaveStart,
+      endDate: leaveEnd,
+      leaveType,
+      leaveName,
+      reason: leaveReason,
+
+      // 2-step workflow
+      status: "pending",          // display status
+      leaderStatus: "pending",
+      adminStatus: "pending",
+
+      leaderActionBy: null,
+      leaderActionAt: null,
+      adminActionBy: null,
+      adminActionAt: null,
+
+      createdAt: new Date().toISOString(),
+    });
+
+    setLeaveStart(""); setLeaveEnd(""); setLeaveReason("");
+    notify("✅ Leave request submitted.");
+    loadLeaves(user.uid);
+    if (isAdmin) loadAllLeaves();
+  };
+
+  const requestOvertime = async () => {
+    if (!otDate || !otStart || !otEnd || !otReason) return notify("Please fill overtime fields.");
+    // calc duration simple
+    const [sh, sm] = otStart.split(":").map(Number);
+    const [eh, em] = otEnd.split(":").map(Number);
+    const totalMins = eh * 60 + em - (sh * 60 + sm);
+    if (totalMins <= 0) return notify("Invalid OT time range.");
+    const totalTime = `${Math.floor(totalMins/60)}h ${totalMins%60}m`;
+    await addDoc(collection(db, "overtimeRequests"), {
+      userId: user.uid,
+      date: otDate,
+      startTime: otStart,
+      endTime: otEnd,
+      totalTime,
+      reason: otReason,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    });
+    setOtDate(""); setOtStart(""); setOtEnd(""); setOtReason("");
+    notify("✅ Overtime request submitted.");
+    loadOvertime(user.uid);
+    if (isAdmin) loadAllOvertime();
+  };
+
+
+  const updateOvertimeStatus = async (id, status) => {
+  await updateDoc(doc(db, "overtimeRequests", id), {
+    status,
+    actionBy: user.uid,
+    actionAt: new Date().toISOString(),
+  });
+  notify(`Overtime ${status}`);
+  loadAllOvertime();
+};
+
+const leaderUpdateLeaveStatus = async (leaveDocId, decision, memberUserId) => {
+  if (!leaderMembers.includes(memberUserId)) {
+    return notify("🚫 You cannot approve non-member leave.");
+  }
+
+  const payload = {
+    leaderStatus: decision,
+    leaderActionBy: user.uid,
+    leaderActionAt: new Date().toISOString(),
+  };
+
+  // if leader rejects -> final reject
+  if (decision === "rejected") {
+    payload.status = "rejected";
+    payload.adminStatus = "rejected"; // optional: lock admin step
+  }
+
+  // if leader approves -> waiting admin
+  if (decision === "approved") {
+    payload.status = "leader_approved";
+  }
+
+  await updateDoc(doc(db, "leaves", leaveDocId), payload);
+
+  notify(`Leader ${decision}`);
+  await loadLeaderLeaves(leaderMembers);
+  if (isAdmin) await loadAllLeaves();
+};
+
+const getLeaveYear = (leave) => new Date(leave.startDate).getFullYear();
+
+const adminUpdateLeaveStatus = async (leaveId, decision, leaveRow) => {
+  const yearForReload = leaveRow?.startDate
+    ? new Date(leaveRow.startDate).getFullYear()
+    : currentYear;
+
+  let shouldCreateNotification = false;
+  let notificationUserId = null;
+  let notificationMessage = "";
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const leaveRef = doc(db, "leaves", leaveId);
+      const leaveSnap = await tx.get(leaveRef);
+      if (!leaveSnap.exists()) throw new Error("Leave not found");
+
+      const leave = { id: leaveSnap.id, ...leaveSnap.data() };
+
+      const prevStatus = String(leave.status || "pending").toLowerCase();
+      const nextStatus = String(decision).toLowerCase();
+
+      const year = getLeaveYear(leave);
+
+      const adminPayload = {
+        adminStatus: nextStatus,
+        adminActionBy: user.uid,
+        adminActionAt: new Date().toISOString(),
+        status: nextStatus,
+
+        leaderStatus:
+          leave.leaderStatus && leave.leaderStatus !== "pending"
+            ? leave.leaderStatus
+            : decision === "approved"
+            ? "skipped_by_admin"
+            : leave.leaderStatus || "pending",
+
+        leaderActionBy:
+          leave.leaderStatus && leave.leaderStatus !== "pending"
+            ? leave.leaderActionBy || null
+            : decision === "approved"
+            ? user.uid
+            : leave.leaderActionBy || null,
+
+        leaderActionAt:
+          leave.leaderStatus && leave.leaderStatus !== "pending"
+            ? leave.leaderActionAt || null
+            : decision === "approved"
+            ? new Date().toISOString()
+            : leave.leaderActionAt || null,
+      };
+
+      const units = Number(leave.balanceDeductedUnits ?? calcLeaveUnits(leave));
+      const leaveName = leave.leaveName;
+
+      const balRef = doc(db, "leaveBalances", `${leave.userId}_${year}`);
+      const balSnap = await tx.get(balRef);
+
+      const balData = balSnap.exists() ? balSnap.data() : { balances: {} };
+      const balances = { ...(balData.balances || {}) };
+      const typeObj = { ...(balances[leaveName] || {}) };
+      const prevTaken = Number(typeObj.taken || 0);
+
+      const wasDeducted = Boolean(leave.balanceDeducted);
+
+      const shouldRefund =
+        prevStatus === "approved" && wasDeducted && nextStatus !== "approved";
+
+      if (shouldRefund) {
+        typeObj.taken = Math.max(0, prevTaken - units);
+        balances[leaveName] = typeObj;
+
+        tx.set(
+          balRef,
+          {
+            userId: leave.userId,
+            year,
+            balances,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+
+        tx.update(leaveRef, {
+          ...adminPayload,
+          balanceDeducted: false,
+          balanceRefunded: true,
+          balanceRefundedAt: new Date().toISOString(),
+          balanceRefundedUnits: units,
+        });
+
+        return;
+      }
+
+      if (nextStatus === "approved") {
+        if (wasDeducted) {
+          tx.update(leaveRef, adminPayload);
+
+          shouldCreateNotification = true;
+          notificationUserId = leave.userId;
+          notificationMessage = `${leave.leaveName} (${leave.leaveType}) approved`;
+          return;
+        }
+
+        typeObj.taken = prevTaken + units;
+        balances[leaveName] = typeObj;
+
+        tx.set(
+          balRef,
+          {
+            userId: leave.userId,
+            year,
+            balances,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+
+        tx.update(leaveRef, {
+          ...adminPayload,
+          balanceDeducted: true,
+          balanceDeductedAt: new Date().toISOString(),
+          balanceDeductedUnits: units,
+          balanceRefunded: false,
+          balanceRefundedAt: null,
+          balanceRefundedUnits: null,
+        });
+
+        shouldCreateNotification = true;
+        notificationUserId = leave.userId;
+        notificationMessage = `${leave.leaveName} (${leave.leaveType}) approved`;
+        return;
+      }
+
+      tx.update(leaveRef, adminPayload);
+    });
+
+    if (shouldCreateNotification && notificationUserId) {
+      await addDoc(collection(db, "notifications"), {
+        userId: notificationUserId,
+        type: "leave",
+        title: "Leave Approved",
+        message: notificationMessage,
+        date: serverTimestamp(),
+        read: false,
+      });
+    }
+
+    notify(`✅ Admin ${decision}`);
+    loadAllLeaves();
+    loadLeaveBalances(yearForReload);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Approve failed: " + err.message);
+  }
+};
+
+
+const deleteLeaveRequest = async (id, leaveRow) => {
+  try {
+    if (!window.confirm("Delete this leave request?")) return;
+
+    const yearForReload = leaveRow?.startDate
+      ? new Date(leaveRow.startDate).getFullYear()
+      : currentYear;
+
+    await runTransaction(db, async (tx) => {
+      const leaveRef = doc(db, "leaves", id);
+      const leaveSnap = await tx.get(leaveRef);
+      if (!leaveSnap.exists()) return;
+
+      const leave = { id: leaveSnap.id, ...leaveSnap.data() };
+
+      const status = String(leave.status || "").toLowerCase();
+      const year = new Date(leave.startDate).getFullYear();
+      const leaveName = leave.leaveName;
+
+      const wasDeducted = Boolean(leave.balanceDeducted);
+
+      if (status === "approved" && wasDeducted) {
+        const units = Number(leave.balanceDeductedUnits ?? calcLeaveUnits(leave));
+
+        const balRef = doc(db, "leaveBalances", `${leave.userId}_${year}`);
+        const balSnap = await tx.get(balRef);
+
+        const balData = balSnap.exists() ? balSnap.data() : { balances: {} };
+        const balances = { ...(balData.balances || {}) };
+        const typeObj = { ...(balances[leaveName] || {}) };
+        const prevTaken = Number(typeObj.taken || 0);
+
+        typeObj.taken = Math.max(0, prevTaken - units);
+        balances[leaveName] = typeObj;
+
+        tx.set(
+          balRef,
+          { userId: leave.userId, year, balances, updatedAt: new Date().toISOString() },
+          { merge: true }
+        );
+      }
+
+      tx.delete(leaveRef);
+    });
+
+    notify("🗑 Leave request deleted");
+    loadAllLeaves();
+    loadLeaveBalances(yearForReload); // ✅ refresh correct year
+  } catch (err) {
+    console.error(err);
+    notify("❌ Delete failed: " + err.message);
+  }
+};
+
+
+const calcLeaveUnits = (leave) => {
+  const start = new Date(leave.startDate);
+  const end = new Date(leave.endDate);
+
+  const days = (end - start) / (1000 * 60 * 60 * 24) + 1; // inclusive
+  const dayCount = Math.max(0, days);
+
+  const lt = String(leave.leaveType || "").toLowerCase();
+  const multiplier = lt.includes("half") ? 0.5 : 1;
+
+  return dayCount * multiplier;
+};
+
+/*   const deleteLeaveRequest = async (id) => {
+  try {
+    if (!window.confirm("Delete this leave request?")) return;
+
+    await deleteDoc(doc(db, "leaves", id));
+    notify("🗑 Leave request deleted");
+    loadAllLeaves(); // refresh admin list
+  } catch (err) {
+    console.error(err);
+    notify("❌ Delete failed: " + err.message);
+  }
+}; */
+
+   const leaderUpdateOvertimeStatus = async (otDocId, status, memberUserId) => {
+    if (!leaderMembers.includes(memberUserId)) {
+      return notify("🚫 You cannot approve non-member overtime.");
+    }
+    await updateOvertimeStatus(otDocId, status);
+    await loadLeaderOvertime(leaderMembers);
+  };
+
+const deleteOvertimeRequest = async (id) => {
+  try {
+    if (!window.confirm("Delete this overtime request?")) return;
+
+    await deleteDoc(doc(db, "overtimeRequests", id));
+    notify("🗑 Overtime request deleted");
+    loadAllOvertime(); // refresh admin list
+  } catch (err) {
+    console.error(err);
+    notify("❌ Delete failed: " + err.message);
+  }
+};
+
+
+
+
+
+/* leave request edit by Staff */
+const [editingMyLeave, setEditingMyLeave] = useState(null);
+const [myEditStart, setMyEditStart] = useState("");
+const [myEditEnd, setMyEditEnd] = useState("");
+const [myEditType, setMyEditType] = useState("Full Day");
+const [myEditLeaveName, setMyEditLeaveName] = useState("Casual");
+const [myEditReason, setMyEditReason] = useState("");
+
+const openLeaveEditModal = (lv) => {
+  setEditingMyLeave(lv);
+  setMyEditStart(lv.startDate);
+  setMyEditEnd(lv.endDate);
+  setMyEditType(lv.leaveType || "Full Day");
+  setMyEditLeaveName(lv.leaveName || "Casual");
+  setMyEditReason(lv.reason || "");
+};
+
+const saveMyLeaveEdit = async () => {
+  if (!editingMyLeave) return;
+
+  try {
+    await updateDoc(doc(db, "leaves", editingMyLeave.id), {
+      startDate: myEditStart,
+      endDate: myEditEnd,
+      leaveType: myEditType,
+      leaveName: myEditLeaveName,
+      reason: myEditReason,
+      editedByUser: user.uid,
+      editedAt: new Date().toISOString(),
+    });
+
+    notify("✅ Leave request updated!");
+    setEditingMyLeave(null);
+
+    loadLeaves(user.uid); // reload my leave list
+    if (isAdmin) loadAllLeaves(); // refresh admin if admin user
+  } catch (err) {
+    console.error(err);
+    notify("❌ Update failed: " + err.message);
+  }
+};
+
+
+
+/* leave request edit by Admin */
+  const [editingLeave, setEditingLeave] = useState(null);
+  const [editLeaveStart, setEditLeaveStart] = useState("");
+  const [editLeaveEnd, setEditLeaveEnd] = useState("");
+  const [editLeaveType, setEditLeaveType] = useState("Full Day");
+  const [editLeaveName, setEditLeaveName] = useState("Casual");
+  const [editLeaveReason, setEditLeaveReason] = useState("");
+
+  const adminSaveLeaveEdit = async () => {
+  if (!editingLeave) return;
+
+  try {
+    await updateDoc(doc(db, "leaves", editingLeave.id), {
+      startDate: editLeaveStart,
+      endDate: editLeaveEnd,
+      leaveType: editLeaveType,
+      leaveName:editLeaveName,
+      reason: editLeaveReason,
+      editedByAdmin: user.uid,
+      editedAt: new Date().toISOString(),
+    });
+
+    notify("✅ Leave request updated successfully!");
+    setEditingLeave(null);
+
+    loadAllLeaves(); // refresh
+  } catch (err) {
+    console.error(err);
+    notify("❌ Update failed: " + err.message);
+  }
+};
+
+const LEAVE_TYPES = [
+  { key: "Annual Leave", label: "Annual", hasCarry: true },
+  { key: "Casual Leave", label: "Casual", hasCarry: false },
+  { key: "Medical Leave", label: "Medical", hasCarry: false },
+  { key: "WithoutPay Leave", label: "WithoutPay", hasCarry: false },
+  { key: "Maternity Leave", label: "Maternity", hasCarry: false },
+];
+
+// --- Leave Taken helpers (for Leave Balance Management) ---
+
+const isSameYear = (dateStr, year) => {
+  if (!dateStr) return false;
+  return String(dateStr).slice(0, 4) === String(year);
+};
+
+const daysInclusive = (startStr, endStr) => {
+  if (!startStr || !endStr) return 0;
+  const s = new Date(startStr);
+  const e = new Date(endStr);
+  const diff = Math.floor((e - s) / (1000 * 60 * 60 * 24));
+  return diff >= 0 ? diff + 1 : 0;
+};
+
+// return total days taken for a user + leaveName in currentYear
+const getLeaveTaken = (uid, leaveName, year = currentYear) => {
+  if (!uid) return 0;
+
+  // allLeaves is loaded for admin; fallback safe
+  const list = (allLeaves || []).filter((l) => {
+    if (l.status !== "approved") return false;
+    if (l.userId !== uid) return false;
+
+    // leaveName in your leave requests looks like "Annual Leave", "Casual Leave", etc.
+    if ((l.leaveName || "") !== leaveName) return false;
+
+    // include if leave is in this year (simple rule)
+    // (if you want cross-year ranges later, we can improve)
+    return isSameYear(l.startDate, year) || isSameYear(l.endDate, year);
+  });
+
+  return list.reduce((sum, l) => {
+    const d = daysInclusive(l.startDate, l.endDate);
+    const type = l.leaveType || "Full Day";
+
+    // Simple rule:
+    // - Morning Half / Evening Half = 0.5 day (only really valid when start=end)
+    // - Full Day = inclusive days
+    if ((type === "Morning Half" || type === "Evening Half") && l.startDate === l.endDate) {
+      return sum + 0.5;
+    }
+    return sum + d;
+  }, 0);
+};
+
+/* All Staff Leave Summary */
+const [leaveSummarySearch, setLeaveSummarySearch] = useState("");
+
+const leaveSummaryUids = Object.keys(usersMap || {})
+  .filter((uid) => {
+    const q = leaveSummarySearch.trim().toLowerCase();
+    if (!q) return true;
+
+    const hay = [
+      getEid(uid),
+      getEmpName(uid),
+      getEmpEmail(uid),
+    ].join(" ").toLowerCase();
+
+    return hay.includes(q);
+  })
+  .sort((a, b) => (getEid(a) || "").localeCompare(getEid(b) || ""));
+
+  /* export excel start */
+      const exportToExcel = (rows, filename, sheetName = "Sheet1") => {
+      try {
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+        const excelBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+        const data = new Blob([excelBuffer], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+
+        saveAs(data, `${filename}.xlsx`);
+      } catch (e) {
+        console.error(e);
+        notify("❌ Export failed: " + (e?.message || "unknown error"));
+      }
+    };
+     
+      const [exportMonth, setExportMonth] = useState(() => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // YYYY-MM
+      });
+      const [exportUserQuery, setExportUserQuery] = useState(""); // employee id/name/email
+      const [exportUserId, setExportUserId] = useState("");       // optional: exact staff select
+
+      const ExportmonthRange = (yyyyMm) => {
+        const [y, m] = yyyyMm.split("-").map(Number);
+        const start = `${y}-${String(m).padStart(2, "0")}-01`;
+        const nextMonth = new Date(y, m, 1);
+        const endExclusive = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-01`;
+        return { start, endExclusive };
+      };
+
+      const staffMatches = (userId, query) => {
+        if (!query) return true;
+        const u = usersMap?.[userId] || {};
+        const text = `${u.eid || ""} ${u.name || ""} ${u.email || ""}`.toLowerCase();
+        return text.includes(query.toLowerCase());
+      };
+
+      //Attendance (date is inside month)
+      const exportAttendanceExcelFiltered = () => {
+      const { start, endExclusive } = ExportmonthRange(exportMonth);
+
+      const filtered = (allAttendance || []).filter((a) => {
+        if (!a?.date) return false;
+        if (a.date < start || a.date >= endExclusive) return false;
+
+        if (exportUserId) return a.userId === exportUserId;
+        return staffMatches(a.userId, exportUserQuery);
+      });
+
+      const rows = filtered.map((a) => ({
+        Date: a.date || "",
+        EmployeeID: usersMap?.[a.userId]?.eid || "",
+        Name: usersMap?.[a.userId]?.name || "",
+        Email: usersMap?.[a.userId]?.email || "",
+        ClockIn: a.clockInTime || "",
+        ClockOut: a.clockOutTime || "",
+      }));
+
+      exportToExcel(rows, `Attendance_${exportMonth}`, "Attendance");
+    };
+
+    //OT (same idea, OT has date)
+      const exportOTExcelFiltered = () => {
+      const { start, endExclusive } = ExportmonthRange(exportMonth);
+
+      const filtered = (allOvertime || []).filter((ot) => {
+        if (!ot?.date) return false;
+        if (ot.date < start || ot.date >= endExclusive) return false;
+
+        if (exportUserId) return ot.userId === exportUserId;
+        return staffMatches(ot.userId, exportUserQuery);
+      });
+
+      const rows = filtered.map((ot) => ({
+        Date: ot.date || "",
+        EmployeeID: usersMap?.[ot.userId]?.eid || "",
+        Name: usersMap?.[ot.userId]?.name || "",
+        Email: usersMap?.[ot.userId]?.email || "",
+        Start: ot.startTime || "",
+        End: ot.endTime || "",
+        Hours: ot.hours || "",
+        Reason: ot.reason || "",
+        Status: ot.status || "",
+      }));
+
+      exportToExcel(rows, `OT_${exportMonth}`, "OT");
+    };
+
+    //Leave (overlap with month)
+    const exportLeaveExcelFiltered = () => {
+    const { start, endExclusive } = ExportmonthRange(exportMonth);
+
+    const filtered = (allLeaves || []).filter((lv) => {
+      const s = lv?.startDate;
+      const e = lv?.endDate;
+      if (!s || !e) return false;
+
+      // overlap condition: [s,e] overlaps [start, endExclusive)
+      const overlaps = !(e < start || s >= endExclusive);
+      if (!overlaps) return false;
+
+      if (exportUserId) return lv.userId === exportUserId;
+      return staffMatches(lv.userId, exportUserQuery);
+    });
+
+    const rows = filtered.map((lv) => ({
+      StartDate: lv.startDate || "",
+      EndDate: lv.endDate || "",
+      EmployeeID: usersMap?.[lv.userId]?.eid || "",
+      Name: usersMap?.[lv.userId]?.name || "",
+      Email: usersMap?.[lv.userId]?.email || "",
+      Type: lv.leaveType || lv.type || "",
+      Reason: lv.reason || "",
+      Status: lv.status || "",
+    }));
+
+    exportToExcel(rows, `Leave_${exportMonth}`, "Leave");
+  };
+
+  //Employee info (filter by name/id/email only)
+  const exportEmployeesExcelFiltered = () => {
+  const q = exportUserQuery.trim().toLowerCase();
+
+  const filtered = (employees || []).filter((e) => {
+    if (!q) return true;
+    const text = `${e.eid || ""} ${e.name || ""} ${e.email || ""}`.toLowerCase();
+    return text.includes(q);
+  });
+
+  const rows = filtered.map((e) => ({
+    EmployeeID: e.eid || "",
+    Name: e.name || "",
+    Email: e.email || "",
+    Department: e.department || "",
+    Designation: e.designation || "",
+    Phone: e.phone || "",
+    Role: e.role || (e.roles || []).join(", "),
+  }));
+
+  exportToExcel(rows, `Employees_${exportMonth}`, "Employees");
+};
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-export") return;
+
+  (async () => {
+    if (Object.keys(usersMap || {}).length === 0) {
+      await loadAllUsers();
+    }
+
+    await loadEmployees();
+    await loadAllAttendance();
+    await loadAllOvertime();
+    await loadAllLeaves();
+  })();
+}, [user, isAdmin, activeSidebar, exportMonth]);
+
+
+  // export excel end
+
+  /* ---------------- summary / csv / clear ---------------- */
+  const getMonthlySummary = () => {
+    const sum = {};
+    allAttendance.forEach((a) => {
+      sum[a.userId] = sum[a.userId] || { attend: 0, leave: 0, overtime: 0 };
+      sum[a.userId].attend++;
+    });
+    allLeaves.filter(l => l.status === "approved").forEach((l) => {
+      sum[l.userId] = sum[l.userId] || { attend: 0, leave: 0, overtime: 0 };
+      sum[l.userId].leave++;
+    });
+    allOvertime.filter(o => o.status === "approved").forEach((o) => {
+      sum[o.userId] = sum[o.userId] || { attend: 0, leave: 0, overtime: 0 };
+      sum[o.userId].overtime++;
+    });
+    return sum;
+  };
+
+  const summary = getMonthlySummary();
+
+  const exportCSV = () => {
+  const rows = [["User", "Date", "Type", "Details"]];
+
+  // ✅ helper to get user label
+  const getUserName = (uid) => {
+    const u = usersMap[uid];
+    return u?.name || u?.email || uid;
+  };
+
+  // ✅ Attendance
+  allAttendance.forEach((a) => {
+    rows.push([
+      getUserName(a.userId),
+      a.date,
+      "Attendance",
+      `${a.clockIn ? formatTimeByViewMode(a.clockIn) : "-"} - ${a.clockOut ? formatTimeByViewMode(a.clockOut) : "-"}`
+    ]);
+  });
+
+  // ✅ Leaves
+  allLeaves.forEach((l) => {
+    rows.push([
+      getUserName(l.userId),
+     `${l.startDate} to ${l.endDate}`,
+      "Leave",
+      `${l.leaveType || ""} -${l.leaveName || ""} - ${l.reason} (${l.status})`
+    ]);
+  });
+
+  // ✅ Overtime
+  allOvertime.forEach((o) => {
+    rows.push([
+      getUserName(o.userId),
+      o.date,
+      "Overtime",
+      `${o.startTime || ""} - ${o.endTime || ""} | ${o.totalTime || ""} (${o.status})`
+    ]);
+  });
+
+  // ✅ Payroll Summary (admin only)
+  allPayroll.forEach((p) => {
+    rows.push([
+      getUserName(p.userId),
+      p.month || p.period || "-",
+      "PayrollSummary",
+      `Basic:${p.basicSalary || 0}, OT:${p.overtimePay || 0}, Total:${p.preferentialTotal || 0}`
+    ]);
+  });
+
+  // ✅ Payslips (admin + staff)
+  allPayslips.forEach((ps) => {
+    rows.push([
+      getUserName(ps.userId),
+      ps.month || ps.period || "-",
+      "Payslip",
+      `Status:${ps.status || "sent"}, Created:${ps.createdAt || ""}`
+    ]);
+  });
+
+  // ✅ PO Reports
+  allPoReports.forEach((r) => {
+    rows.push([
+      getUserName(r.userId),
+      r.month || r.date || "-",
+      "POReport",
+      `Project:${r.projectName || ""}, Amount:${r.amount || 0}, Remark:${r.remark || ""}`
+    ]);
+  });
+
+  // ✅ Convert rows to CSV with escaping
+  const csv = rows
+    .map((r) =>
+      r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")
+    )
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `full_export_${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+
+  notify("✅ CSV exported successfully!");
+};
+
+
+ const clearAllData = async () => {
+  if (
+    !window.confirm(
+      "⚠️ This will RESET Attendance, Leaves, Overtime, PO Reports, Payroll Summary, and Payslips.\nUsers will NOT be deleted.\n\nContinue?"
+    )
+  )
+    return;
+
+  const collectionsToClear = [
+    "attendance",
+    "leaves",
+    "overtimeRequests",
+    "poReports",
+    "payrollSummary",
+    "payslips", // optional but recommended
+  ];
+
+  let totalDeleted = 0;
+
+  try {
+    for (const name of collectionsToClear) {
+      const snap = await getDocs(collection(db, name));
+
+      for (const docSnap of snap.docs) {
+        await deleteDoc(docSnap.ref);
+        totalDeleted++;
+      }
+
+      console.log(`🗑️ Cleared ${snap.docs.length} docs from ${name}`);
+    }
+
+    notify(`✅ Reset complete. Deleted ${totalDeleted} records.`);
+
+    // ✅ Reset local state lists too
+    setAllAttendance([]);
+    setAllLeaves([]);
+    setAllOvertime([]);
+    setAllPoReports([]);
+    setAllPayroll([]);
+    setAllPayslips([]);
+
+    // ✅ Reload admin lists again (optional)
+    loadAllAttendance();
+    loadAllLeaves();
+    loadAllOvertime();
+    loadAllPoReports();
+    loadAllPayroll();
+    loadAllPayslips();
+  } catch (err) {
+    console.error("❌ ClearAllData error:", err);
+    notify("❌ Failed to reset data: " + err.message);
+  }
+};
+  
+  const backupAndClear = async (mode) => {
+    exportCSV();
+    if (mode === "all") await clearAllData();
+   
+  };
+
+  const clearMonthData = async (month) => {
+  if (
+    !window.confirm(
+      `⚠️ Reset all records for ${month}?\nThis will delete Attendance, Leaves, OT, PO Reports, Payroll Summary, Payslips for that month only.\nUsers will remain.\n\nContinue?`
+    )
+  ) return;
+
+  const collections = [
+    { name: "attendance", field: "date" },         // "DD/MM/YYYY" or "YYYY-MM-DD"
+    { name: "leaves", field: "startDate" },
+    { name: "overtimeRequests", field: "date" },
+    { name: "poReports", field: "date" },
+    { name: "payrollSummary", field: "month" },    // "YYYY-MM"
+    { name: "payslips", field: "month" }           // "YYYY-MM"
+  ];
+
+  let totalDeleted = 0;
+
+  try {
+    for (const col of collections) {
+      const snap = await getDocs(collection(db, col.name));
+
+      for (const docSnap of snap.docs) {
+        const data = docSnap.data();
+        const value = data[col.field];
+
+        // ✅ Convert to month format YYYY-MM
+        let recordMonth = "";
+
+        if (!value) continue;
+
+        // Case 1: already YYYY-MM
+        if (value.length === 7 && value.includes("-")) {
+          recordMonth = value;
+        }
+        // Case 2: YYYY-MM-DD
+        else if (value.length >= 10 && value.includes("-")) {
+          recordMonth = value.slice(0, 7);
+        }
+        // Case 3: DD/MM/YYYY
+        else if (value.includes("/")) {
+          const parts = value.split("/");
+          if (parts.length === 3) {
+            recordMonth = `${parts[2]}-${parts[1]}`;
+          }
+        }
+
+        if (recordMonth === month) {
+          await deleteDoc(docSnap.ref);
+          totalDeleted++;
+        }
+      }
+
+      console.log(`✅ Cleared month ${month} from ${col.name}`);
+    }
+
+    notify(`✅ Deleted ${totalDeleted} records for ${month}`);
+
+    // Reload admin data
+    loadAllAttendance();
+    loadAllLeaves();
+    loadAllOvertime();
+    loadAllPoReports();
+    loadAllPayroll();
+    loadAllPayslips();
+
+  } catch (err) {
+    console.error("❌ clearMonthData error:", err);
+    notify("❌ Month reset failed: " + err.message);
+  }
+};
+
+
+  const [resetMonth, setResetMonth] = useState(
+  new Date().toISOString().slice(0, 7) // "YYYY-MM"
+);
+
+ 
+  /* ---------------- initial effect: if profile changes, update saved location and lists ---------------- */
+  useEffect(() => {
+    if (!user) return;
+    // update saved location for UI convenience
+    (async () => {
+      try {
+        const ud = await getDoc(doc(db, "users", user.uid));
+        if (ud.exists()) {
+          const d = ud.data();
+          if (d.location) setUserSavedLocation(d.location);
+        }
+      } catch (err) { console.error(err); }
+    })();
+  }, [user]);
+
+  /* ---------------- UI components ---------------- */
+  /* const colorStatus = (s) => s === "approved" ? <span className="badge green">Approved</span> : s === "rejected" ? <span className="badge red">Rejected</span> : <span className="badge yellow">Pending</span>; */
+
+  const colorStatus = (s) =>
+  s === "approved" ? <span className="badge green">Approved</span>
+  : s === "rejected" ? <span className="badge red">Rejected</span>
+  : s === "leader_approved" ? <span className="badge blue">Leader Approved</span>
+  : <span className="badge yellow">Pending</span>;
+
+
+  /* ---------------- render ---------------- */
+  if (authLoading) {
+  return <div style={{ padding: 20 }}>Loading...</div>;
+  }
+
+  if (!user) {
+    return (
+      <div className="login-page">
+        <div className="login-box">
+          <h2>Staff Attendance Login</h2>
+          <form onSubmit={handleLogin}>
+            <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} required />
+            <div style={{ position: "relative" }}>
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder="Password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+             />
+
+              <span
+                onClick={() => setShowPassword(!showPassword)}
+                style={{
+                  position: "absolute",
+                  right: "12px",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  fontSize: "16px"
+                }}
+                title={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? "Hide" : "Show"}
+              </span>
+            </div>
+
+           {/*  <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} required /> */}
+            <button className="btn submit" type="submit">Login</button>
+            <button type="button"  className="btn"  style={{ marginTop: 10, background: "#eee", color: "#333" }}  onClick={handlePasswordReset}>
+              Forgot Password?
+            </button>
+
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-layout">
+      {/* --- SLIDE TOGGLE SIDEBAR --- */}
+      {/* DARK OVERLAY */}
+{sidebarOpen && (
+ <div className="overlay-dark" onClick={() => setSidebarOpen(false)}></div>
+)}
+  {/* TOP BAR WITH HAMBURGER */}
+<div className="mobile-topbar">
+ <button className={`hamburger ${sidebarOpen ? "open" : ""}`} onClick={() => setSidebarOpen(!sidebarOpen)}>
+  <span></span>
+  <span></span>
+  <span></span>
+  </button>
+
+  <span className="topbar-title">Simple'Z Attendance</span>
+  
+  <div className="header-right">
+  <div className="noti-wrapper">
+  <button
+  className="noti-btn"
+  onClick={() => {
+    setShowNoti((prev) => !prev);
+    markAllRead();
+  }}
+  >
+  <img src="/noti_bell.png" alt="Logout" className="noti-icon" />
+  {unreadCount > 0 && (
+  <span className="noti-badge">{unreadCount}</span>
+  )}
+  </button>
+  </div>
+  </div>
+
+</div>
+
+{/* SIDEBAR */}
+  <div className={`sidebar ${sidebarOpen ? "open" : ""} ${desktopSidebarCollapsed ? "collapsed" : ""}`}>
+
+  <div className="brand">
+    <div className="brand-top">
+       <button  type="button"  className="desktop-collapse-btn"  onClick={() => setDesktopSidebarCollapsed((prev) => !prev)}
+        title={desktopSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>{desktopSidebarCollapsed ? "☰" : "⟨⟨"}</button>
+        <h3>Simple'Z Attendance</h3>
+    </div>
+
+    {!desktopSidebarCollapsed && (
+      <small><b>{name || user.email}</b>logged in as {role || user.role}</small>
+      
+    )}
+  </div>
+
+    <nav>
+    <button  type="button"  className="menu-group-btn"  onClick={() => handleGroupClick("myMenu")}  title="My Menu">
+    {desktopSidebarCollapsed ? (<span className="group-icon">🏠</span>  ) : (
+      <>
+        <span>My Menu</span>
+       <span className="arrow">{openMenuGroup === "myMenu" ? "▾" : "▸"}</span>
+      </>
+    )}
+  </button>
+
+    {openMenuGroup === "myMenu" && (
+      <div className="menu-group-list">
+        <a className="nav-item" href="?tab=my-panel" onClick={(e) => handleTabClick(e, "my-panel")}>
+          <span className="icon">🏠</span>{!desktopSidebarCollapsed && <span className="nav-text"> My Dashboard </span>}
+        </a>
+        <a className="nav-item" href="?tab=my-att" onClick={(e) => handleTabClick(e, "my-att")}>
+          <span className="icon">🕒</span>{!desktopSidebarCollapsed && <span className="nav-text">My Attendance</span>}
+        </a>
+        <a className="nav-item" href="?tab=my-leave" onClick={(e) => handleTabClick(e, "my-leave")}>
+          <span className="icon">📝</span>{!desktopSidebarCollapsed && <span className="nav-text"> My Leave / OT</span>}
+        </a>
+        <a className="nav-item" href="?tab=my-po" onClick={(e) => handleTabClick(e, "my-po")}>
+          <span className="icon">📝</span>{!desktopSidebarCollapsed && <span className="nav-text"> My P/O Reports</span>}
+        </a>
+        <a className="nav-item" href="?tab=my-payslip" onClick={(e) => handleTabClick(e, "my-payslip")}>
+          <span className="icon">🧾</span>{!desktopSidebarCollapsed && <span className="nav-text">My Payslip</span>}
+        </a>
+       
+      </div>
+    )}
+
+    {isLeader && (
+      <>
+      
+      <button  type="button"  className="menu-group-btn"  onClick={() => handleGroupClick("leaderMenu")}  title="Leader Dashboard">
+      {desktopSidebarCollapsed ? (<span className="group-icon">👥</span>  ) : (
+        <>
+          <span>Leader Dashboard</span>
+        <span className="arrow">{openMenuGroup === "leaderMenu" ? "▾" : "▸"}</span>
+        </>
+      )}
+    </button>
+
+        {openMenuGroup === "leaderMenu" && (
+          <div className="menu-group-list">
+            <a className="nav-item" href="?tab=member-att-panel" onClick={(e) => handleTabClick(e, "member-att-panel")}>
+              <span className="icon">👥</span>{!desktopSidebarCollapsed && <span className="nav-text">Members Attendance</span>}
+            </a>
+            <a className="nav-item" href="?tab=member-leave-panel" onClick={(e) => handleTabClick(e, "member-leave-panel")}>
+              <span className="icon">👥</span>{!desktopSidebarCollapsed && <span className="nav-text"> Members Leave Requests</span>}
+            </a>
+            <a className="nav-item" href="?tab=member-ot-panel" onClick={(e) => handleTabClick(e, "member-ot-panel")}>
+              <span className="icon">👥</span>{!desktopSidebarCollapsed && <span className="nav-text">Members OT Requests</span>}
+            </a>
+           
+          </div>
+        )}
+      </>
+    )}
+
+    {isAdmin && (
+      <>
+      <button  type="button"  className="menu-group-btn"  onClick={() => handleGroupClick("adminEmployee")}  title="Employee Management">
+      {desktopSidebarCollapsed ? (<span className="group-icon">👤</span>  ) : (
+        <>
+          <span>Employee Management</span>
+        <span className="arrow">{openMenuGroup === "adminEmployee" ? "▾" : "▸"}</span>
+        </>
+      )}
+    </button>
+        {openMenuGroup === "adminEmployee" && (
+          <div className="menu-group-list">
+          
+              <a className="nav-item" href="?tab=admin-employee-form" onClick={(e) => handleTabClick(e, "admin-employee-form")}>
+                <span className="icon">🧾</span>{!desktopSidebarCollapsed && <span className="nav-text"> Employee Information</span>}
+              </a>
+           
+            <a className="nav-item" href="?tab=admin-employee" onClick={(e) => handleTabClick(e, "admin-employee")}>
+              <span className="icon">👥</span>{!desktopSidebarCollapsed && <span className="nav-text"> Employee Location</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-gps-setting" onClick={(e) => handleTabClick(e, "admin-gps-setting")}>
+              <span className="icon">📍</span>{!desktopSidebarCollapsed && <span className="nav-text"> Staff GPS Setting</span>}
+            </a>
+          </div>
+     )}
+
+
+        <button  type="button"  className="menu-group-btn"  onClick={() => handleGroupClick("adminAttendance")}  title="Attendance Management">
+        {desktopSidebarCollapsed ? (<span className="group-icon">🕒</span>  ) : (
+          <>
+            <span>Attendance Management</span>
+          <span className="arrow">{openMenuGroup === "adminAttendance" ? "▾" : "▸"}</span>
+          </>
+        )}
+      </button>
+        {openMenuGroup === "adminAttendance" && (
+          <div className="menu-group-list">
+            <a className="nav-item" href="?tab=admin-att-overview" onClick={(e) => handleTabClick(e, "admin-att-overview")}>
+              <span className="icon">🗓️</span>{!desktopSidebarCollapsed && <span className="nav-text"> Attendance Overview</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-company-calendar" onClick={(e) => handleTabClick(e, "admin-company-calendar")}>
+              <span className="icon"><img src="https://flagcdn.com/16x12/mm.png" srcset="https://flagcdn.com/32x24/mm.png 2x, https://flagcdn.com/48x36/mm.png 3x"width="16"height="12"  alt="Myanmar"/></span> {!desktopSidebarCollapsed && <span className="nav-text">Company Calendar</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-att" onClick={(e) => handleTabClick(e, "admin-att")}>
+              <span className="icon">📊</span> {!desktopSidebarCollapsed && <span className="nav-text">All Staff Attendance</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-att-summary" onClick={(e) => handleTabClick(e, "admin-att-summary")}>
+              <span className="icon">📊</span> {!desktopSidebarCollapsed && <span className="nav-text">Monthly Attendance Summary</span>}
+            </a>
+          </div>
+        )}
+
+
+        <button  type="button"  className="menu-group-btn"  onClick={() => handleGroupClick("adminLeave")}  title="Leave Management">
+        {desktopSidebarCollapsed ? (<span className="group-icon">📝</span>  ) : (
+          <>
+            <span>Leave Management</span>
+          <span className="arrow">{openMenuGroup === "adminLeave" ? "▾" : "▸"}</span>
+          </>
+        )}
+       </button>
+        {openMenuGroup === "adminLeave" && (
+          <div className="menu-group-list">
+            <a className="nav-item" href="?tab=admin-leave" onClick={(e) => handleTabClick(e, "admin-leave")}>
+              <span className="icon">📄</span> {!desktopSidebarCollapsed && <span className="nav-text">All Staff Leave Requests</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-leave-balance" onClick={(e) => handleTabClick(e, "admin-leave-balance")}>
+              <span className="icon">📊</span> {!desktopSidebarCollapsed && <span className="nav-text">All Staff Leave Balance Management</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-leave-summary" onClick={(e) => handleTabClick(e, "admin-leave-summary")}>
+              <span className="icon">📝</span> {!desktopSidebarCollapsed && <span className="nav-text">All Staff Leave Summary</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-po" onClick={(e) => handleTabClick(e, "admin-po")}>
+              <span className="icon">💼</span> {!desktopSidebarCollapsed && <span className="nav-text">All Staff P/O Reports</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-ot" onClick={(e) => handleTabClick(e, "admin-ot")}>
+              <span className="icon">⏫</span> {!desktopSidebarCollapsed && <span className="nav-text">All Overtime Requests</span>}
+            </a>
+            
+          </div>
+        )}
+
+         {canAccessPayroll && (
+        <button  type="button"  className="menu-group-btn"  onClick={() => handleGroupClick("adminPayroll")}  title="Payroll Management">
+        {desktopSidebarCollapsed ? (<span className="group-icon">💰</span>  ) : (
+          <>
+            <span>Payroll Management</span>
+          <span className="arrow">{openMenuGroup === "adminPayroll" ? "▾" : "▸"}</span>
+          </>
+        )}
+       </button>
+         )}
+
+        
+        {openMenuGroup === "adminPayroll" && (
+          <div className="menu-group-list">
+            {canAccessPayroll && (
+              <>
+                <a className="nav-item" href="?tab=admin-payroll" onClick={(e) => handleTabClick(e, "admin-payroll")}>
+                  <span className="icon">🏦</span> {!desktopSidebarCollapsed && <span className="nav-text">Payroll Calculator</span>}
+                </a>
+                <a className="nav-item" href="?tab=admin-payroll-summary" onClick={(e) => handleTabClick(e, "admin-payroll-summary")}>
+                  <span className="icon">💰</span> {!desktopSidebarCollapsed && <span className="nav-text">Payroll Summary</span>}
+                </a>
+              </>
+            )}
+
+           
+          </div>
+        )}
+
+         <a className="nav-item blue" href="?tab=admin-export" onClick={(e) => handleTabClick(e, "admin-export")}>
+              <span className="icon">📤</span> {!desktopSidebarCollapsed && <span className="nav-text">Export Excel</span>}
+        </a>
+
+      </>
+    )}
+
+    <div style={{marginTop:20}}>
+       {/*  <button className="btn out" onClick={handleLogout}>Logout</button> */}
+      <button className="btn out logout-btn"  onClick={handleLogout} title="Logout">
+        {desktopSidebarCollapsed ? (
+          <img src="/logout_icon.png" alt="Logout" className="logout-icon" />
+        ) : (
+          <>
+            <img src="/logout_icon.png" alt="" className="logout-icon" />
+            <span style={{ marginLeft: 8 }}>Logout</span>
+          </>
+        )}
+      </button>
+        </div>
+        <p>Copyright 2026 Simple'Z All right reserved.</p>
+
+    </nav>
+
+        
+      </div>
+
+
+      {/* main content */}
+      <main className={`main ${desktopSidebarCollapsed ? "expanded" : ""}`}>
+        <div className="header-right">
+        <div className="noti-wrapper">
+        <button
+        className="noti-btn"
+        onClick={() => {
+          setShowNoti((prev) => !prev);
+          markAllRead();
+        }}
+        >
+        <img src="/noti_bell.png" alt="Logout" className="noti-icon" />
+        {unreadCount > 0 && (
+        <span className="noti-badge">{unreadCount}</span>
+        )}
+        </button>
+        </div>
+        </div>
+
+          {showNoti && (
+            <div className="noti-dropdown">
+              <div className="noti-header">
+                <b>Notification</b><br />
+                <small>
+                  {notifications.length === 0
+                    ? "You have no messages"
+                    : `You have ${unreadCount} new messages`}
+                </small>
+              </div>
+
+              <div className="noti-list">
+                {notifications.length === 0 ? (
+                  <p>No notifications</p>
+                ) : (
+                  notifications.map((n) => (
+                    <div key={n.id} className="noti-item" onClick={() => openNotification(n)} style={{ cursor: "pointer" }}>
+                      <div className="noti-icon">
+                        {n.type === "leave" && "A"}
+                        {n.type === "payslip" && "ℹ️"}
+                        {n.type === "ot" && "⏫"}
+                      </div>
+
+                      <div>
+                        <div>{n.message}</div>
+                        <small>
+                          {n.date?.toDate ? n.date.toDate().toLocaleDateString() : ""}
+                        </small>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+        {/* My Panel (clock, save location, personal lists) */}
+        {activeSidebar === "my-panel" && (
+        <section className="dashboard-page">
+          <div className="dashboard-header">
+            <div>
+            <h1>My Dashboard</h1>
+            <p>  Hello {name || user?.email}, {getGreeting()}</p>
+            </div>
+
+          </div>        
+
+          <div className="dashboard-main-layout">
+            <div className="dashboard-left">
+              <div className="dashboard-panel">
+                <div className="card-title-row">
+                  <h3>My Daily Attendance</h3>
+                </div>
+
+                <div className="daily-attendance-box">
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between" }}>
+                  <div>
+                  <div className="shift-label">
+                    {todayAttendance?.locationName || "MAINSHIFT"}
+                  </div>
+
+                  <div className="daily-date">
+                    {new Date(todayStr).toLocaleDateString("en-US", {
+                      month: "long",
+                      day: "numeric",
+                      weekday: "long",
+                      year:"numeric"
+                    })}
+                  </div>
+                  </div>
+                   <div className="time-display-card custom-time-dropdown">
+                <label className="time-display-label">TimeZone Display</label>
+
+                <div className="time-dropdown">
+                  <button type="button" className={`time-dropdown-trigger ${showTimeDropdown ? "open" : ""}`} onClick={() => setShowTimeDropdown((prev) => !prev)}>
+                    <span>{getTimeViewLabel(timeViewMode)}</span>
+                    <span className={`time-dropdown-chevron ${showTimeDropdown ? "open" : ""}`}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"  xmlns="http://www.w3.org/2000/svg">
+                        <path
+                          d="M6 9L12 15L18 9"
+                            stroke="currentColor"
+                          strokeWidth="2.2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                  </button>
+
+                  {showTimeDropdown && (
+                    <div className="time-dropdown-menu">
+                      <button  type="button" className={`time-dropdown-item ${timeViewMode === "myanmar" ? "active" : ""}`}
+                        onClick={() => {setTimeViewMode("myanmar");setShowTimeDropdown(false);}}> Myanmar Time </button>
+
+                      <button type="button" className={`time-dropdown-item ${timeViewMode === "gmt" ? "active" : ""}`}
+                        onClick={() => {setTimeViewMode("gmt");setShowTimeDropdown(false);}}> GMT / UTC </button>
+
+                      <button type="button" className={`time-dropdown-item ${timeViewMode === "local" ? "active" : ""}`}
+                        onClick={() => {setTimeViewMode("local");setShowTimeDropdown(false);}}> My Local Time </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+
+                  </div>
+                  
+                  <div className="dashboard-actions">
+                    <button className="action-btn success" onClick={clockIn}>
+                      Clock In
+                    </button>
+                    <button className="action-btn danger" onClick={clockOut}>
+                      Clock Out
+                    </button>
+                  </div>
+                    
+                  <div className="today-status-grid two-cols">
+                    <div className="mini-stat">
+                      <span>Check In</span>
+                      <strong>{todayClockIn}</strong>
+                      <div className="mini-line green"></div>
+                    </div>
+
+                    <div className="mini-stat">
+                      <span>Check Out</span>
+                      <strong>{todayClockOut}</strong>
+                      <div className="mini-line blue"></div>
+                    </div>
+                  </div>
+
+                  <div className="today-status-grid two-cols" style={{ marginTop: 14 }}>
+                    <div className="mini-stat">
+                      <span>Status</span>
+                      <strong>{attendanceStatus}</strong>
+                    </div>
+
+                    <div className="mini-stat">
+                      <span>Location</span>
+                      <strong>{todayAttendance?.locationName || "-"}</strong>
+                    </div>
+                  </div>
+
+                  
+                </div>
+              </div>
+
+              <div className="dashboard-panel staff-calendar-panel">
+                <div className="staff-calendar-toolbar">
+                  <h3 className="staff-calendar-title">Monthly Attendance Calendar</h3>
+
+                  <input
+                    type="month"
+                    className="staff-calendar-month"
+                    value={myCalendarMonth}
+                    onChange={(e) => setMyCalendarMonth(e.target.value)}
+                  />
+                </div>
+
+                <div className="staff-calendar-grid compact">
+                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, i) => (
+                    <div
+                      key={day}
+                      className={`staff-calendar-weekday ${i === 0 || i === 6 ? "weekend" : ""}`}
+                    >
+                      {day}
+                    </div>
+                  ))}
+
+                  {myCalendarCells.map((dateStr, idx) => {
+                    if (!dateStr) {
+                      return (
+                        <div
+                          key={`blank-${idx}`}
+                          className="staff-calendar-day compact empty"
+                          aria-hidden="true"
+                        />
+                      );
+                    }
+
+                  const att = myAttendanceMap[dateStr];
+                  const holiday = holidayMap[dateStr];
+                  const dayIndex = new Date(`${dateStr}T00:00:00`).getDay();
+                  const isWeekend = dayIndex === 0 || dayIndex === 6;
+                  const today = new Date().toISOString().slice(0, 10);
+                  const isFuture = dateStr > today;
+                  
+
+                  const dayLeaves = leaves.filter((l) => {
+                    if ((l.status || "").toLowerCase() !== "approved") return false;
+                    return dateStr >= l.startDate && dateStr <= l.endDate;
+                  });
+
+                  const hasAttendance = att?.clockIn && att?.clockOut;
+                  const hasLeave = dayLeaves.length > 0;
+                  const isMorningHalf = isMorningHalfLeaveOnDate(dateStr);
+                  const isEveningHalf = isEveningHalfLeaveOnDate(dateStr);
+
+                  const leaveForDay = leaves.filter((l) => {
+                  if ((l.status || "").toLowerCase() !== "approved") return false;
+                  return dateStr >= l.startDate && dateStr <= l.endDate;
+                  });
+
+                  const hasFullLeave = leaveForDay.some((l) =>
+                  String(l.leaveType || "").toLowerCase().includes("full")
+                  );
+
+                  const hasHalfLeave = leaveForDay.some((l) =>
+                  String(l.leaveType || "").toLowerCase().includes("half")
+                  );
+
+                  const hasIn = !!att?.clockIn;
+                  const hasOut = !!att?.clockOut;
+
+                  let isAbsentHalf = false;
+                  let isAbsentFull = false;
+
+                  /* if (!holiday && !hasFullLeave) {
+                  if (!hasIn && !hasOut) {
+                  isAbsentFull = true;
+                  } else if (!hasIn || !hasOut) {
+                  if (!hasHalfLeave) {
+                  isAbsentHalf = true;
+                  }
+                  }
+                  } */
+                 // ❗ Only mark absent for working days (not weekend, not holiday, not future)
+                  if (!holiday && !isWeekend && !isFuture && !hasFullLeave) {
+                    if (!hasIn && !hasOut) {
+                      isAbsentFull = true;
+                    } else if (!hasIn || !hasOut) {
+                      if (!hasHalfLeave) {
+                        isAbsentHalf = true;
+                      }
+                    }
+                  }
+
+                // Late only if NOT morning half leave
+                  const isLate =
+                    att?.clockIn && !isMorningHalf
+                      ? isLateByYangonTime(att.clockIn)
+                      : false;
+
+                  // Early out only if NOT evening half leave (if you use later)
+                  const isEarlyOut =
+                    att?.clockOut && !isEveningHalf
+                      ? isEarlyOutByYangonTime(att.clockOut)
+                      : false;
+                  const isSelected = selectedCalendarDate === dateStr;
+
+                  return (
+                    <button
+                      key={dateStr}
+                      type="button"
+                      onClick={() => setSelectedCalendarDate(dateStr)}
+                      className={`staff-calendar-day compact
+                        ${isWeekend ? "weekend" : ""}
+                        ${holiday ? "holiday" : ""}
+                        ${isSelected ? "selected" : ""}`}
+                    >
+                      <div className="staff-calendar-mobile-weekday">
+                        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dayIndex]}
+                      </div>
+
+                      <div className="staff-calendar-date compact">
+                        {Number(dateStr.slice(-2))}
+                      </div>
+
+                      <div className="staff-calendar-dots">
+                        {hasAttendance && <span className="staff-dot attendance" />}
+                        {hasLeave && <span className="staff-dot leave" />}
+                        {isLate && <span className="staff-dot late" />}
+                        {holiday && <span className="staff-dot holiday" />}
+                        {isAbsentHalf && <span className="staff-dot absent-half" />}
+                        {isAbsentFull && <span className="staff-dot absent-full" />}
+                        {isWeekend && <span className="staff-dot holiday" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="staff-calendar-detail">
+                <h4 className="staff-calendar-detail-title">
+                  {new Date(`${selectedCalendarDate}T00:00:00`).toLocaleDateString("en-US", {
+                    weekday: "long",
+                    month: "long",
+                    day: "2-digit",
+                  })}
+                </h4>
+
+                {selectedDayAttendance ? (
+                  <div className="staff-calendar-detail-item">
+                    <span className="staff-detail-dot attendance" />
+                    <div>
+                      <div className="staff-detail-label">Attendance</div>
+                      <div className="staff-detail-text">
+                        Check in at{" "}
+                        {selectedDayAttendance.clockIn
+                          ? formatTimeByViewMode(selectedDayAttendance.clockIn)
+                          : selectedDayAttendance.clockInTime || "-"}
+                        {" "} - Check out at{" "}
+                        {selectedDayAttendance.clockOut
+                          ? formatTimeByViewMode(selectedDayAttendance.clockOut)
+                          : selectedDayAttendance.clockOutTime || "-"}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {selectedDayLeaves.map((leaveRow) => (
+                  <div className="staff-calendar-detail-item" key={leaveRow.id}>
+                    <span className="staff-detail-dot leave" />
+                    <div>
+                      <div className="staff-detail-label">
+                        {leaveRow.leaveName} ({leaveRow.leaveType})
+                      </div>
+                      <div className="staff-detail-text">
+                        {leaveRow.startDate} - {leaveRow.endDate}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {selectedDayIsLate ? (
+                  <div className="staff-calendar-detail-item">
+                    <span className="staff-detail-dot late" />
+                    <div>
+                      <div className="staff-detail-label">Late</div>
+                      <div className="staff-detail-text">
+                        Clock in after 08:00 Myanmar time
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {selectedDayIsAbsentHalf && (
+                  <div className="staff-calendar-detail-item">
+                    <span className="staff-detail-dot absent-half" />
+                    <div>
+                      <div className="staff-detail-label">Incomplete Attendance</div>
+                      <div className="staff-detail-text">
+                        ⚠️ You forgot to clock { !selectedDayHasIn ? "in" : "out" }.
+                        This counts as a half-day absence.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {selectedDayIsAbsentFull && (
+                  <div className="staff-calendar-detail-item">
+                    <span className="staff-detail-dot absent-full" />
+                    <div>
+                      <div className="staff-detail-label">Absent</div>
+                      <div className="staff-detail-text">
+                        No attendance record for this day.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+              {selectedDayIsOffDay && (
+              <div className="staff-calendar-detail-item">
+                <span className="staff-detail-dot holiday" />
+                <div>
+                  <div className="staff-detail-label">Off Day</div>
+                  <div className="staff-detail-text">
+                    {selectedDayIsHoliday
+                      ? selectedDayHoliday?.name || "Company holiday"
+                      : "Weekend off day"}
+                  </div>
+                </div>
+              </div>
+            )}
+                
+              </div>
+            </div>
+
+            </div>
+
+            <div className="dashboard-right">
+              <div className="dashboard-panel">
+                <div className="card-title-row">
+                  <h3>My Monthly Attendance</h3>
+                </div>
+
+                <div className="monthly-cards-grid">
+                  <div className="summary-card mint">
+                    <div className="summary-number">{monthPresentDays}</div>
+                    <div className="summary-label">Attendance</div>
+                  </div>
+
+                  <div className="summary-card pink">
+                    <div className="summary-number">{monthLeaveDays}</div>
+                    <div className="summary-label">Leave</div>
+                  </div>
+
+                  <div className="summary-card sand">
+                    <div className="summary-number">{monthLateCount}</div>
+                    <div className="summary-label">Late In</div>
+                  </div>
+
+                  <div className="summary-card sky">
+                    <div className="summary-number">{monthEarlyOutCount}</div>
+                    <div className="summary-label">Early Out</div>
+                  </div>
+                </div>
+
+                <div className="monthly-list">
+                  <div className="monthly-list-row">
+                    <span>This Month</span>
+                    <strong>{currentMonthStr}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="dashboard-panel">
+                <div className="card-title-row">
+                  <h3>My Leave History</h3>
+                </div>
+
+                <div className="leave-table-wrap">
+                  <table className="leave-history-table">
+                    <thead>
+                      <tr>
+                        <th>Leave Name</th>
+                        <th>Taken</th>
+                        <th>Balance</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {leaveSummaryRows.map((row) => (
+                        <tr key={row.leaveName}>
+                          <td>{row.leaveName}</td>
+                          <td>{row.taken}</td>
+                          <td>{row.balance}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+
+            </div>
+          </div>
+        </section>
+      )}
+
+        
+
+        {/* My Attendance list */}
+      {activeSidebar === "my-att" && (
+          <section className="card">
+            <h2>My Attendance</h2>
+
+            <div className="myatt_table">
+              <input
+                type="month"
+                value={myAttendanceMonth}
+                onChange={(e) => setMyAttendanceMonth(e.target.value)}
+              />
+              <button className="btn" onClick={() => setMyAttendanceMonth("")}>
+                Clear
+              </button>
+            </div>
+              <table className="data-table">
+              <thead><tr><th>Date</th><th>Clock In</th><th>Clock Out</th><th>In Loc</th><th>Out Loc</th></tr></thead>
+              <tbody>
+                {filteredMyAttendance.length === 0 ? (
+                    <tr>
+                      <td colSpan="8" style={{ textAlign: "center", padding: "20px" }}>
+                        No attendance records for this month.
+                      </td>
+                    </tr>
+                  ) : (
+                 filteredMyAttendance.map((a) => (
+                    <tr key={a.id}>
+                      <td>{a.date}</td>
+                      <td>{a.clockIn ? formatTimeByViewMode(a.clockIn) : (a.clockInTime || "-")}</td>
+                      <td>{a.clockOut ? formatTimeByViewMode(a.clockOut) : (a.clockOutTime || "-")}</td>
+                      <td>{a.locationIn ? <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${a.locationIn.latitude},${a.locationIn.longitude}`}>📍 View</a> : "-"}</td>
+                      <td>{a.locationOut ? <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${a.locationOut.latitude},${a.locationOut.longitude}`}>📍 View</a> : "-"}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </section>
+       )}
+
+        {/* My Leave & OT */}
+        {activeSidebar === "my-leave" && (
+          <section className="card">
+            <h2>Leave Request</h2>
+         <div className="form" style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div className="form-group">
+            <label>Start Date</label>
+            <input type="date" value={leaveStart} onChange={(e) => setLeaveStart(e.target.value)} />
+          </div>
+
+          <div className="form-group">
+            <label>End Date</label>
+            <input type="date" value={leaveEnd} onChange={(e) => setLeaveEnd(e.target.value)} />
+          </div>
+
+          <div className="form-group">
+            <label>Leave Type</label>
+            <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
+              <option>Full Day</option>
+              <option>Morning Half</option>
+              <option>Evening Half</option>
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label>Leave Name</label>
+            <select value={leaveName} onChange={(e) => setLeaveName(e.target.value)}>
+              <option>Casual Leave</option>
+              <option>Annual Leave</option>
+              <option>WithoutPay Leave</option>
+              <option>Medical Leave</option>
+              <option>Maternity Leave</option>
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label>Reason</label>
+            <input
+              type="text"
+              placeholder="Reason"
+              value={leaveReason}
+              onChange={(e) => setLeaveReason(e.target.value)}
+            />
+          </div>
+
+          <div className="form-group" style={{ alignSelf: "flex-end" }}>
+            <button className="btn submit" onClick={applyLeave}>
+              Submit Leave
+            </button>
+          </div>
+        </div>
+
+            <h3 style={{marginTop:16}}>My Leave Requests</h3>
+
+            <div className="myleave_table">
+            <input
+              type="month"
+              value={myLeaveMonth}
+              onChange={(e) => setMyLeaveMonth(e.target.value)}
+            />
+            <button className="btn" onClick={() => setMyLeaveMonth("")}>
+              Clear
+            </button>
+          </div>
+
+            <table className="data-table">
+              <thead>
+              <tr>
+                <th>Apply Date</th><th>LeaveStart</th><th>LeaveEnd</th><th>LeaveType</th><th>LeaveName</th><th>Reason</th><th>Status</th><th>Action</th>
+              </tr>
+            </thead>
+
+              <tbody>
+                {filteredMyLeaves.length === 0 ? (
+                    <tr>
+                      <td colSpan="8" style={{ textAlign: "center", padding: "20px" }}>
+                        No leave requests for this month.
+                      </td>
+                    </tr>
+                  ) : (
+                  filteredMyLeaves.map((lv) => (
+                    <tr key={lv.id}>
+                      <td>{lv.createdAt?.split("T")[0]}</td>
+                      <td>{lv.startDate}</td>
+                      <td>{lv.endDate}</td>
+                      <td>{lv.leaveType}</td>
+                      <td>{lv.leaveName}</td>
+                      <td>{lv.reason}</td>
+                      <td>{colorStatus(lv.status)}</td>
+                      <td>
+                      <button
+                        className="btn small"
+                        disabled={lv.status !== "pending"}
+                        style={{
+                          opacity: lv.status !== "pending" ? 0.6 : 1,
+                          cursor: lv.status !== "pending" ? "not-allowed" : "pointer",
+                          color: "#000",
+                        }}
+                        onClick={() => {
+                          if (lv.status !== "pending") return;
+                          openLeaveEditModal(lv);
+                        }}
+                      >
+                        ✏ Edit
+                      </button>
+                    </td>
+
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            {editingMyLeave && (
+              <div className="modal-overlay" onClick={() => setEditingMyLeave(null)}>
+                <div className="modal" onClick={(e) => e.stopPropagation()}>
+                  <h3>✏ Edit My Leave Request</h3>
+
+                  <div className="form">
+                    <label>Start Date</label>
+                    <input type="date" value={myEditStart} onChange={(e) => setMyEditStart(e.target.value)} />
+
+                    <label>End Date</label>
+                    <input type="date" value={myEditEnd} onChange={(e) => setMyEditEnd(e.target.value)} />
+
+                    <div style={{ display: "flex", justifyContent: "start", gap: "2px",alignItems:"center" }}>
+                     <label>Leave Type</label>
+                    <select value={myEditType} onChange={(e) => setMyEditType(e.target.value)}>
+                      <option>Full Day</option>
+                      <option>Morning Half</option>
+                      <option>Evening Half</option>
+                    </select>
+
+                    <label>Leave Name</label>
+                    <select value={myEditLeaveName} onChange={(e) => setMyEditLeaveName(e.target.value)}>
+                      <option>Casual Leave</option>
+                      <option>Annual Leave</option>
+                      <option>Medical Leave</option>
+                      <option>WithoutPay Leave</option>
+                    </select>
+                   
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "start", gap: "2px",alignItems:"center" }}>
+                      <label>Reason</label>
+                      <input type="text" value={myEditReason} onChange={(e) => setMyEditReason(e.target.value)} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, marginTop: 15 }}>
+                    <button className="btn blue" onClick={saveMyLeaveEdit}>💾 Save</button>
+                    <button className="btn red" onClick={() => setEditingMyLeave(null)}>✖ Cancel</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+
+            {/* ---- Your Leave Summary ---- */}
+            <h3 style={{ marginTop: 30 }}>My Leave Summary</h3>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Leave Name</th>
+                  <th>Allowance</th>
+                  <th>Taken</th>
+                  <th>Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+              {summaryLeaveTypes.map((leaveName, i) => {
+                const base =
+                  leaveBalances?.[user.uid]?.balances?.[leaveName]?.base ?? 0;
+
+                // Carry only for Annual Leave
+                const carry =
+                  leaveName === "Annual Leave"
+                    ? (leaveBalances?.[user.uid]?.balances?.[leaveName]?.carry ?? 0)
+                    : 0;
+
+                const allowance = Number(base) + Number(carry);
+
+                // ✅ Taken is now manual/admin-controlled (from leaveBalances)
+                const taken =
+                  Number(leaveBalances?.[user.uid]?.balances?.[leaveName]?.taken ?? 0);
+
+                // ✅ Balance based on admin taken
+                const balance = Math.max(0, allowance - taken);
+
+                return (
+                  <tr key={i}>
+                    <td>{leaveName}</td>
+                    <td>{allowance}</td>
+                    <td>{taken}</td>
+                    <td>{balance}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+
+            </table>
+
+            
+            <h2 style={{marginTop:20}}>Overtime Request</h2>
+            <div className="form" style={{display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start"}}>
+              <div className="form-group">
+                <label>Date</label>
+                <input type="date" value={otDate} onChange={e=>setOtDate(e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>Start Time</label>
+                <input type="time" value={otStart} onChange={e=>setOtStart(e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>End Time</label>
+                <input type="time" value={otEnd} onChange={e=>setOtEnd(e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>Reason</label>
+                <input placeholder="Reason" value={otReason} onChange={e=>setOtReason(e.target.value)} />
+              </div>
+             <div className="form-group" style={{ alignSelf: "flex-end" }}>
+                <button className="btn submit" onClick={requestOvertime}>Submit OT</button>
+              </div>
+             
+            </div>
+
+            <h3 style={{marginTop:16}}>My Overtime Requests</h3>
+            <div className="myot_table">
+            <input
+              type="month"
+              value={myOtMonth}
+              onChange={(e) => setMyOtMonth(e.target.value)}
+            />
+            <button className="btn" onClick={() => setMyOtMonth("")}>
+              Clear
+            </button>
+          </div>
+
+            <table className="data-table">
+              <thead><tr><th>Date</th><th>Time</th><th>Total</th><th>Reason</th><th>Status</th></tr></thead>
+              <tbody>
+              {filteredMyOvertime.length === 0 ? (
+              <tr>
+              <td colSpan="5" style={{ textAlign: "center", padding: "20px" }}>
+              No overtime requests for this month.
+              </td>
+              </tr>
+              ) : (
+              filteredMyOvertime.map((ot) => (
+              <tr key={ot.id}>
+              <td>{ot.date}</td>
+              <td>{ot.startTime} - {ot.endTime}</td>
+              <td>{ot.totalTime}</td>
+              <td>{ot.reason}</td>
+              <td>{colorStatus(ot.status)}</td>
+              </tr>
+              ))
+              )}
+              </tbody>
+            </table>
+          </section>
+      )}
+
+       {/* ---- P/O Report Section ---- */}
+        {activeSidebar === "my-po" && (
+          <section className="card">
+            <h2>My Permission Out (P/O) Report</h2>
+              <div className="form" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
+                <div class="form-group">
+                  <label>Date</label>
+                  <input type="date" value={poDate} onChange={(e) => setPoDate(e.target.value)} />
+                </div>
+                <div class="form-group">
+                   <label>Start Time</label>
+                <input type="time" value={poFrom} onChange={(e) => setPoFrom(e.target.value)} />
+                </div>
+                <div class="form-group">
+                   <label>End Time</label>
+                  <input type="time" value={poTo} onChange={(e) => setPoTo(e.target.value)} />
+                </div>
+                <div className="form-group">
+                <label>Reason</label>
+                <input
+                  type="text" placeholder="Reason"  value={poReason} onChange={(e) => setpoReason(e.target.value)}
+                />
+              </div>
+                {/* <button className="btn submit" onClick={addPoReport}>Add P/O</button> */}
+                <button  className="btn submit"  onClick={editingPo ? updatePoReport : addPoReport}>  {editingPo ? "Update P/O" : "Add P/O"}</button>
+              </div>
+
+              <div className="myot_table">
+            <input
+              type="month"
+              value={myPOMonth}
+              onChange={(e) => setMyPOMonth(e.target.value)}
+            />
+            <button className="btn" onClick={() => setMyPOMonth("")}>
+              Clear
+            </button>
+          </div>
+
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Apply Date</th>
+                    <th>P/O Date</th>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Total</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+              {filteredMyPO.length === 0 ? (
+              <tr>
+              <td colSpan="7" style={{ textAlign: "center", padding: "20px" }}>
+              No P/O requests for this month.
+              </td>
+              </tr>
+              ) : (
+              filteredMyPO.map((p) => (
+                      <tr key={p.id}>
+                        <td>{p.createdAt?.split("T")[0]}</td>
+                        <td>{p.date}</td>
+                        <td>{p.fromTime}</td>
+                        <td>{p.toTime}</td>
+                        <td>{p.totalTimeByHour}</td>
+                        <td>{p.POreason}</td>
+                        <td>{colorStatus(p.status || "pending")}</td>
+                        <td>
+                        <button
+                          className="btn small"
+                          disabled={p.status !== "pending"}
+                          style={{
+                            opacity: p.status !== "pending" ? 0.6 : 1,
+                            cursor: p.status !== "pending" ? "not-allowed" : "pointer",
+                            color: "#000",
+                          }}
+                          onClick={() => openEditPo(p)}
+                         
+                        >
+                          ✏ Edit
+                        </button>
+                      </td>
+                         
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </section>
+
+        )}
+
+      {activeSidebar === "my-payslip" && (
+        <section className="card">
+          <h2>My Payslips</h2>
+          <table className="data-table payslip">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Pay Month</th>
+                <th>Salary in Rate</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {myPayslips.length === 0 ? (
+                <tr><td colSpan="3">No payslips yet</td></tr>
+              ) : (
+                myPayslips.map((ps) => (
+                  <tr key={ps.id}>
+                    <td>{ps.payrollData?.createdAt?.slice(0, 10) || ps.createdAt?.slice(0, 10) || "-"}</td>
+                    <td>For {ps.payrollData?.month || ps.paymonth || "-"}</td>
+                    <td>{ps.payrollData?.preferentialTotal?.toLocaleString() || "-"}</td>
+                    <td>{ps.status}</td>
+                    <td>
+                      <button className="btn small green" onClick={() => exportPayslip(ps.payrollData)}>Export Payslip</button>
+                   
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </section>
+    )}
+
+    
+      {/* LEADER SECTION */}
+      {isLeader  && activeSidebar === "member-att-panel" && (
+   <section className="card">
+  <div className="section admin">
+    <h2>My Members Attendance</h2>
+      
+    <div className="filters mem_att_table">
+      <input
+        type="text"
+        placeholder="Search by name"
+        value={attendanceNameFilter}
+        onChange={(e) => setAttendanceNameFilter(e.target.value)}
+      />
+      <input
+        type="month"
+        value={attendanceMonthFilter}
+        onChange={(e) => setAttendanceMonthFilter(e.target.value)}
+      />
+    
+      <button className="btn" onClick={resetAttendanceFilters}>Reset</button>
+    </div>
+
+
+    <table className="data-table">
+      <thead><tr><th>User</th><th>Date</th><th>Clock In</th><th>Clock Out</th><th>In Loc</th><th>Out Loc</th><th>Action</th></tr></thead>
+      <tbody>
+        {filteredMemberAttendance.length === 0 ? <tr><td colSpan="7" style={{ textAlign: "center", padding: "20px" }}>No attendance records found for this month.</td></tr> :
+          filteredMemberAttendance.map((at, i) => (
+            <tr key={at.id}>
+              <td>{displayUser(at.userId)}</td>
+              <td>{at.date}</td>
+              <td>{toMyanmarTime(at.clockIn)}</td>
+              <td>{toMyanmarTime(at.clockOut)}</td>
+              <td>{at.locationIn ? <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${at.locationIn.latitude},${at.locationIn.longitude}`}>📍 View</a> : "-"}</td>
+              <td>{at.locationOut ? <a target="_blank" rel="noreferrer" href={`https://maps.google.com/?q=${at.locationOut.latitude},${at}`}>📍 View</a> : "-"}</td>
+              <td>
+              <button
+                className="btn small"
+                onClick={() => {
+                  setEditingLeaderAttendance(at);
+                  setLeaderEditIn(at.clockInTime || "");
+                  setLeaderEditOut(at.clockOutTime || "");
+                }}
+              >
+                ✏ Edit
+              </button>
+            </td>
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+
+    {editingLeaderAttendance && (
+  <div className="modal-overlay" onClick={() => setEditingLeaderAttendance(null)}>
+    <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <h3>✏ Edit Member Attendance</h3>
+
+      <p>
+        <b>Member:</b> {displayUser(editingLeaderAttendance.userId)} <br />
+        <b>Date:</b> {editingLeaderAttendance.date}
+      </p>
+
+      <div className="form" style={{ gap: 10 }}>
+        <div className="form-group">
+          <label>Clock In</label>
+          <input
+            type="time"
+            value={leaderEditIn}
+            onChange={(e) => setLeaderEditIn(e.target.value)}
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Clock Out</label>
+          <input
+            type="time"
+            value={leaderEditOut}
+            onChange={(e) => setLeaderEditOut(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 15 }}>
+        <button className="btn blue" onClick={leaderUpdateAttendanceTime}>
+          💾 Save
+        </button>
+        <button className="btn red" onClick={() => setEditingLeaderAttendance(null)}>
+          ✖ Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+
+  </div>
+  </section>
+)}
+
+    {isLeader  && activeSidebar === "member-leave-panel" && (
+   <section className="card">
+  <div className="section admin">
+    <h2>My Members Leave Requests</h2>
+
+     <div className="filters mem_leave_table">
+              <input
+                type="text"
+                placeholder="Search by name"
+                value={leaveNameFilter}
+                onChange={(e) => setLeaveNameFilter(e.target.value)}
+                
+              />
+              <div className="flex-date">
+               <label>Start Date</label>
+              <input
+                  type="date"
+                  value={leaveFromDate}
+                  onChange={(e) => setLeaveFromDate(e.target.value)}
+                />
+                </div>
+                <div className="flex-date">
+               <label>End Date</label>
+              <input
+                type="date"
+                value={leaveToDate}
+                onChange={(e) => setLeaveToDate(e.target.value)}
+              />
+              </div>
+
+              <button className="btn" onClick={resetLeaveFilters}>Reset</button>
+            </div>
+    
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>User</th><th>ApplyDate</th><th>LeaveStart</th><th>LeaveEnd</th><th>LeaveName</th><th>LeaveType</th><th>Reason</th><th>Status</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filteredMemberLeaves.length === 0 ? (
+          <tr><td colSpan="9" style={{ textAlign: "center", padding: "20px" }}>No leave requests found for this month.</td></tr>
+        ) : (
+          filteredMemberLeaves.map((lv) => (
+            <tr key={lv.id}>
+              <td>{displayUser(lv.userId)}</td>
+              <td>{lv.createdAt?.split("T")[0]}</td>
+              <td>{lv.startDate}</td>
+              <td>{lv.endDate}</td>
+              <td>{lv.leaveName}</td>
+              <td>{lv.leaveType}</td>
+              <td>{lv.reason}</td>
+              <td>{colorStatus(lv.status)}</td>
+              <td>
+                <div style={{display: "flex", justifyContent:"start", gap: 2}}>
+                <button
+                  className="btn small"
+                  onClick={() => leaderUpdateLeaveStatus(lv.id, "approved", lv.userId)}
+                >✅</button>
+                <button
+                  className="btn small red"
+                  onClick={() => leaderUpdateLeaveStatus(lv.id, "rejected", lv.userId)}
+                >❌</button>
+                </div>
+              </td>
+            </tr>
+          ))
+        )}
+      </tbody>
+    </table>
+     </div>
+  </section>
+)}
+
+     {isLeader  && activeSidebar === "member-ot-panel" && (
+   <section className="card">
+  <div className="section admin">
+    <h2>My Members Overtime Requests</h2>
+
+    <div className="filters mem_ot_table">
+      <input
+        type="text"
+        placeholder="Search by name"
+        value={otNameFilter}
+        onChange={(e) => setOtNameFilter(e.target.value)}
+      />
+
+     <input
+        type="month"
+        value={otMonthFilter}
+        onChange={(e) => setOtMonthFilter(e.target.value)}
+      />
+      <button className="btn" onClick={resetOTFilters}>Reset</button>
+    </div>
+
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>User</th><th>Date</th><th>Time</th><th>Total</th><th>Reason</th><th>Status</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filteredMemberOT.length === 0 ? (
+          <tr><td colSpan="7" style={{ textAlign: "center", padding: "20px" }}>No overtime requests found for this month.</td></tr>
+        ) : (
+          filteredMemberOT.map((ot) => (
+            <tr key={ot.id}>
+              <td>{displayUser(ot.userId)}</td>
+              <td>{ot.date}</td>
+              <td>{ot.startTime} - {ot.endTime}</td>
+              <td>{ot.totalTime}</td>
+              <td>{ot.reason}</td>
+              <td>{colorStatus(ot.status)}</td>
+              <td>
+                <div style={{display: "flex", justifyContent:"start", gap: 2}}>
+                <button
+                  className="btn small"
+                  onClick={() => leaderUpdateOvertimeStatus(ot.id, "approved", ot.userId)}
+                >✅</button>
+                <button
+                  className="btn small red"
+                  onClick={() => leaderUpdateOvertimeStatus(ot.id, "rejected", ot.userId)}
+                >❌</button>
+                 </div>
+              </td>
+            </tr>
+          ))
+        )}
+      </tbody>
+    </table>
+     </div>
+  </section>
+)}
+
+
+    
+           
+      {/* Admin Employee Management */}
+      {isAdmin && activeSidebar === "admin-employee-form" && (
+    <section className="card">
+    <h2>Employee Information</h2>
+
+    {/* Search + actions */}
+    <div className="emp_info">
+      <input
+        type="text"
+        placeholder="Search by code, name, email, department..."
+        value={empSearch}
+        onChange={(e) => setEmpSearch(e.target.value)}
+    
+      />
+      <button className="btn" onClick={() => setEmpSearch("")}>Clear</button>
+      <button className="btn blue" onClick={openCreateEmployeeModal}>+ New Employee</button>
+
+    <label>Employement Status</label>
+    <select
+    value={employeeStatusFilter}
+    onChange={(e) => setEmployeeStatusFilter(e.target.value)}
+    >
+    <option value="active">Active</option>
+    <option value="resigned">Resigned</option>
+    <option value="all">All</option>
+    </select>
+
+    </div>
+
+
+
+    {/* Employee list (click row to edit) */}
+    <div className="table-scroll">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Dept</th>
+            <th>Rank</th>
+            <th>Pitch</th>
+            <th>Designation</th>
+            <th>Email</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filteredEmployees.length === 0 ? (
+            <tr><td colSpan="8">No employees found</td></tr>
+          ) : (
+            filteredEmployees.map((e) => (
+              <tr
+                key={e.id}
+                onClick={() => openEmployeeForEdit(e)}
+                style={{
+                  cursor: "pointer",
+                  background: selectedEmpId === e.id ? "#eef6ff" : "",
+                }}
+              >
+                <td>{e.employeeCode || e.eid || "-"}</td>
+                <td>{e.employeeName || e.name || "-"}</td>
+                <td>{e.department || "-"}</td>
+                <td>{e.rank || "-"}</td>
+                <td>{e.pitch || "-"}</td>
+                <td>{e.designation || "-"}</td>
+                <td>{e.email || "-"}</td>
+                <td>
+                 <button className="btn small" onClick={() => openEditEmployeeModal(e)}>
+                  ✏ Edit
+                </button>
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+
+      {/* Form */}
+    {showEmpModal && (
+  <div className="modal-backdrop" onClick={() => setShowEmpModal(false)}>
+    <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>
+          {selectedEmpId ? "Edit Employee" : "Create New Employee"}
+        </h2>
+        <button className="btn" onClick={() => setShowEmpModal(false)}>✖</button>
+      </div>
+
+      {/* ---- YOUR FORM START ---- */}
+      <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <label style={{ fontSize: 14 }}>Employee Code</label>
+        <input
+          placeholder="Employee Code"
+          value={employeeForm.employeeCode}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, employeeCode: e.target.value })}
+        />
+
+        <label style={{ fontSize: 14 }}>Employee Name</label>
+        <input
+          placeholder="Employee Name"
+          value={employeeForm.employeeName}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, employeeName: e.target.value })}
+        />
+
+        <label style={{ fontSize: 14 }}>Myanmar Name</label>
+        <input
+          placeholder="Myanmar Name"
+          value={employeeForm.myanmarName}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, myanmarName: e.target.value })}
+        />
+
+        <label style={{ fontSize: 14 }}>Gender</label>
+        <select
+          value={employeeForm.gender}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, gender: e.target.value })}
+        >
+          <option value="">Gender</option>
+          <option value="Male">Male</option>
+          <option value="Female">Female</option>
+        </select>
+
+        
+        <label style={{ fontSize: 14 }}>Language Level</label>
+        <input
+          placeholder="Language Level"
+          value={employeeForm.languageLevel}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, languageLevel: e.target.value })}
+        />
+
+        <label style={{ fontSize: 14 }}>Department</label>
+        <input
+          placeholder="Department"
+          value={employeeForm.department}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, department: e.target.value })}
+        />
+
+        <label style={{ fontSize: 14 }}>Designation</label>
+        <input
+          placeholder="Designation"
+          value={employeeForm.designation}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, designation: e.target.value })}
+        />
+
+        <label style={{ fontSize: 12 }}>Rank</label>
+        <input
+          placeholder="Rank"
+          value={employeeForm.rank}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, rank: e.target.value })}
+        />
+
+        <label style={{ fontSize: 12 }}>Pitch</label>
+        <input
+          placeholder="Pitch"
+          value={employeeForm.pitch}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, pitch: e.target.value })}
+        />
+
+        <label style={{ fontSize: 12 }}>Job Title Allowance</label>
+        <input
+          placeholder="Job Title Allowance"
+          value={employeeForm.JobTitleAllowance}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, JobTitleAllowance: e.target.value })}
+        />
+
+        <label style={{ fontSize: 12 }}>Director Allowance</label>
+        <input
+          placeholder="Director Allowance"
+          value={employeeForm.DirectorAllowance}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, DirectorAllowance: e.target.value })}
+        />
+
+        <label style={{ fontSize: 12 }}>Language Allowance</label>
+         <input
+          placeholder="Language Allowance"
+          value={employeeForm.LanguageAllowance}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, LanguageAllowance: e.target.value })}
+        />
+  
+         <label style={{ fontSize: 12 }}>Email</label>
+        <input
+          placeholder="Email"
+          value={employeeForm.email}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, email: e.target.value })}
+        />
+
+         <label style={{ fontSize: 12 }}>DOE</label>
+          <input
+            type="date"
+            value={employeeForm.doe}
+            onChange={(e) => setEmployeeForm({ ...employeeForm, doe: e.target.value })}
+          />
+              
+          <label style={{ fontSize: 12 }}>DOB</label>
+          <input
+            type="date"
+            value={employeeForm.dob}
+            onChange={(e) => setEmployeeForm({ ...employeeForm, dob: e.target.value })}
+          />
+
+          <label>Role</label>
+          <select
+            value={employeeForm.role || "staff"}
+            onChange={(e) =>
+              setEmployeeForm({
+                ...employeeForm,
+                role: e.target.value,
+                roles: [e.target.value],
+              })
+            }
+          >
+            <option value="staff">Staff</option>
+            <option value="leader">Leader</option>
+            <option value="hr">HR</option>
+            <option value="admin">Admin</option>
+          </select>
+                
+        <label style={{ fontSize: 12 }}>Employment Type</label>
+        <input
+          placeholder="Employment Type"
+          value={employeeForm.employmentType}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, employmentType: e.target.value })}
+        />
+
+        <label style={{ fontSize: 12 }}>Probation Period</label>
+        <input
+          placeholder="Probation Period"
+          value={employeeForm.probationPeriod}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, probationPeriod: e.target.value })}
+        />
+
+        <label style={{ fontSize: 12 }}>Age</label>
+        <input
+          placeholder="Age"
+          value={employeeForm.age}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, age: e.target.value })}
+        />
+
+         <label style={{ fontSize: 12 }}>NRC</label>
+        <input
+          placeholder="NRC"
+          value={employeeForm.nrc}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, nrc: e.target.value })}
+        />
+
+         <label style={{ fontSize: 12 }}>Phone</label>
+        <input
+          placeholder="Phone"
+          value={employeeForm.phone}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, phone: e.target.value })}
+        />
+
+         <label style={{ fontSize: 12 }}>Address</label>
+        <input
+          placeholder="Address"
+          value={employeeForm.address}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, address: e.target.value })}
+        />
+
+         <label style={{ fontSize: 12 }}>Contact Address</label>
+        <input
+          placeholder="Contact Address"
+          value={employeeForm.contactAddress}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, contactAddress: e.target.value })}
+        />
+
+         <label style={{ fontSize: 12 }}>Marital Status</label>
+        <select
+          value={employeeForm.maritalStatus}
+          onChange={(e) => setEmployeeForm({ ...employeeForm, maritalStatus: e.target.value })}
+        >
+          <option value="">Marital Status</option>
+          <option value="Single">Single</option>
+          <option value="Married">Married</option>
+          <option value="Divorced">Divorced</option>
+          <option value="Widowed">Widowed</option>
+        </select>
+
+      </div>
+      
+      <div style={{position:"relative"}}>
+       
+      <div className="modal_leader">
+        <label style={{ marginBottom: "10px" }}>Type leader name... </label>
+        <input placeholder="Type leader name..."  value={leaderQueryInput} autoComplete="off"
+          onChange={(e) => {
+            setLeaderQueryInput(e.target.value);
+            setShowLeaderDropdown(true);
+          }}
+          onFocus={() => setShowLeaderDropdown(true)}
+        />
+     </div>
+
+      {employeeForm.leaderId && (
+      <div style={{ marginTop: 6, fontSize: 13, color: "#333" }}>
+        Current leader: <b>{employeeById[employeeForm.leaderId]?.name || "Unknown"}</b>
+      </div>
+     )}
+    
+
+    {/* show dropdown based on INPUT, not leaderQuery */}
+    {showLeaderDropdown && leaderQueryInput.trim() && (
+    <div
+      style={{
+        position: "absolute",
+        top: "100%",
+        left: 0,
+        right: 0,
+        background: "#fff",
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        maxHeight: 200,
+        overflowY: "auto",
+        zIndex: 9999,
+        boxShadow: "0 8px 20px rgba(0,0,0,0.15)",
+        marginTop: 4,
+      }}
+    >
+      {leaders
+        .filter((l) => {
+          const q = leaderQueryInput.trim().toLowerCase();
+          return (l.name || "").toLowerCase().includes(q);
+        })
+        .slice(0, 20)
+        .map((l) => (
+          <div
+            key={l.id}
+            style={{
+              padding: "8px 10px",
+              cursor: "pointer",
+              borderBottom: "1px solid #f1f1f1",
+            }}
+            onClick={() => {
+              setEmployeeForm({ ...employeeForm, leaderId: l.id });
+              setLeaderQueryInput(l.name || "");
+              // ✅ close dropdown
+              setShowLeaderDropdown(false);
+            }}
+          >
+            <div style={{ fontWeight: 500 }}>{l.name}</div>
+            <div style={{ fontSize: 12, color: "#666" }}>{l.email}</div>
+          </div>
+        ))}
+    </div>
+  )}
+ </div>     
+        <div style={{ marginTop: 14,marginBottom: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {/* ✅ Only show LOGIN EMAIL + TEMP PASSWORD when creating */}
+        {!selectedEmpId && (
+          <>
+           <label style={{ marginBottom: "10px" }}>Login Email </label>
+            <input
+              type="email"
+              placeholder="Login Email"
+              value={loginEmail}
+              onChange={(e) => setLoginEmail(e.target.value)}
+              autoComplete="off"
+              name="new-login-email"
+            />
+
+            <label style={{ marginBottom: "10px" }}>Temporary Password </label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                style={{ flex: 1 }}
+                type={showTempPw ? "text" : "password"}
+                placeholder="Temporary Password"
+                value={tempPassword}
+                onChange={(e) => setTempPassword(e.target.value)}
+                autoComplete="new-password"
+                name="new-temp-password"
+              />
+              <button type="button" className="btn small" onClick={() => setShowTempPw(v => !v)}>
+                {showTempPw ? "Hide" : "Show"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{borderTop: 2,borderWidth:"2px",borderTopStyle:"solid",fontSize:"16",paddingTop:"20px"}}>For Resignation management</div>
+      <div style={{ display: "flex", gap: 10, marginTop: 16, }} className="resign">
+        <div className="form-group">
+          <label>Last Working Day</label>
+          <input type="date" value={employeeForm.lastWorkingDay || ""} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, lastWorkingDay: e.target.value }))}/>
+        </div>
+              
+        <div className="form-group">
+          <label>Resigned Date</label>
+          <input type="date" value={employeeForm.resignedDate || ""} onChange={(e) =>setEmployeeForm((prev) => ({ ...prev, resignedDate: e.target.value }))}/>
+        </div>
+        
+      </div>
+      
+      <div style={{ display: "flex", gap: 10, marginTop: 16,justifyContent:"center" }}>
+        <button className="btn red" type="button" onClick={markEmployeeResigned}>Mark Resigned</button>
+        <button className="btn green" type="button" onClick={restoreEmployeeActive}>Restore Active</button>
+      </div>
+      
+      <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
+        <button
+          className="btn blue"
+          onClick={async () => {
+            if (selectedEmpId) await updateEmployee();
+            else await createEmployee();
+
+            // close modal after save
+            setShowEmpModal(false);
+          }}
+        >
+          💾 Save
+        </button>
+
+        <button
+          className="btn red"
+          onClick={() => {
+            startCreateEmployee();
+            setShowEmpModal(false);
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+      {/* ---- YOUR FORM END ---- */}
+    </div>
+  </div>
+)}
+
+  
+  </section>
+)}
+
+
+  {isAdmin && activeSidebar === "admin-employee" && (
+  <section className="card">
+    <h2>Employee Location</h2>
+
+    <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+      <input
+        type="text"
+        placeholder="Search by ID, name, email, department..."
+        value={employeeSearch}
+        onChange={(e) => setEmployeeSearch(e.target.value)}
+        style={{ flex: 1 }}
+      />
+      <button className="btn small" onClick={() => setEmployeeSearch("")}>
+        Clear
+      </button>
+    </div>
+
+
+      <table className="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Locations</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+
+      <tbody>
+       {filteredEmployeeslocation.map((emp) => (
+
+          <React.Fragment key={emp.id}>
+            {/* MAIN ROW */}
+            <tr>
+              <td>{emp.eid}</td>
+              <td>{emp.name}</td>
+              <td>
+                <div>
+                  {emp.locations?.[0]?.name || "—"}
+                </div>
+                <div>
+                  {emp.locations?.[1]?.name || "—"}
+                </div>
+              </td>
+              <td>
+                <div style={{ display: "flex", gap: 8}}>
+                <button
+                  className="btn small"
+                 /*  onClick={() =>
+                    setEditingLocationsEmpId(
+                      editingLocationsEmpId === emp.id ? null : emp.id
+                    )
+                  } */
+                 onClick={() => openLocationModal(emp)}
+                >
+                  📍 Edit Locations
+                </button>
+                  <button
+                  className="btn small red"
+                  onClick={() => deleteEmployee(emp.id)}
+                  >
+                  🗑 Delete
+                </button>
+               </div>
+              </td>
+            </tr>
+          </React.Fragment>
+            )) }
+        </tbody>
+    </table>
+
+     {showLocationModal && locationEditEmp && (
+          <div
+          className="modal-backdrop"
+          onClick={() => {
+          setShowLocationModal(false);
+          setLocationEditEmp(null);
+          }}
+          >
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <h2>Edit Locations</h2>
+          <h3>📍 {locationEditEmp.name}</h3>
+
+          <div className="form">
+          {[0, 1].map((idx) => (
+          <React.Fragment key={idx}>
+          <label>Location {idx + 1} Name</label>
+          <input
+            value={locationEditEmp.locations?.[idx]?.name || ""}
+            onChange={(e) => {
+              const locations = [...locationEditEmp.locations];
+              locations[idx] = { ...locations[idx], name: e.target.value };
+              setLocationEditEmp({ ...locationEditEmp, locations });
+            }}
+          />
+
+          <label>Latitude</label>
+          <input
+            value={locationEditEmp.locations?.[idx]?.latitude || ""}
+            onChange={(e) => {
+              const locations = [...locationEditEmp.locations];
+              locations[idx] = { ...locations[idx], latitude: e.target.value };
+              setLocationEditEmp({ ...locationEditEmp, locations });
+            }}
+          />
+
+          <label>Longitude</label>
+          <input
+            value={locationEditEmp.locations?.[idx]?.longitude || ""}
+            onChange={(e) => {
+              const locations = [...locationEditEmp.locations];
+              locations[idx] = { ...locations[idx], longitude: e.target.value };
+              setLocationEditEmp({ ...locationEditEmp, locations });
+            }}
+          />
+          </React.Fragment>
+          ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
+          <button
+          className="btn blue"
+          onClick={async () => {
+          const payload = {
+            ...locationEditEmp,
+            locations: locationEditEmp.locations.map((loc) => ({
+              name: loc.name || "",
+              latitude: Number(loc.latitude || 0),
+              longitude: Number(loc.longitude || 0),
+            })),
+          };
+
+          await saveEmployeeLocations(payload);
+          await loadEmployees();
+
+          setShowLocationModal(false);
+          setLocationEditEmp(null);
+          }}
+          >
+          💾 Save Locations
+          </button>
+
+          <button
+          className="btn red"
+          onClick={() => {
+          setShowLocationModal(false);
+          setLocationEditEmp(null);
+          }}
+          >
+          Cancel
+          </button>
+          </div>
+          </div>
+          </div>
+          )}
+    
+    </section>
+  )}
+
+  {isAdmin && activeSidebar === "admin-gps-setting" && (
+  <section className="card">
+    <h2>Staff GPS Setting</h2>
+
+    <div style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+      <input
+        type="text"
+        placeholder="Search by ID, name, email, department..."
+        value={gpsSettingSearch}
+        onChange={(e) => setGpsSettingSearch(e.target.value)}
+        style={{ flex: 1, minWidth: 240 }}
+      />
+      <button className="btn" onClick={() => setGpsSettingSearch("")}>Clear</button>
+    </div>
+
+    <div style={{ marginBottom: 12, background: "#f8fafc", border: "1px solid #e5e7eb", padding: 12, borderRadius: 10 }}>
+      <div><b>GPS Required</b> → must detect location</div>
+      <div><b>GPS Optional</b> → try GPS first, but allow clock in/out if location fails</div>
+      <div><b>GPS Disabled</b> → do not request GPS</div>
+    </div>
+
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Department</th>
+          <th>Current Mode</th>
+          <th>Saved Locations</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filteredGpsSettingEmployees.length === 0 ? (
+          <tr><td colSpan="7">No staff found</td></tr>
+        ) : (
+          filteredGpsSettingEmployees.map((emp) => {
+            const currentMode = getAttendanceLocationModeValue(emp);
+            return (
+              <tr key={emp.id}>
+                <td>{emp.eid || "-"}</td>
+                <td>{emp.name || "-"}</td>
+                <td>{emp.email || "-"}</td>
+                <td>{emp.department || emp.team || "-"}</td>
+                <td>
+                  <select
+                    value={currentMode}
+                    onChange={(e) => {
+                      const nextMode = e.target.value;
+                      setEmployees((prev) =>
+                        prev.map((x) =>
+                          x.id === emp.id ? { ...x, attendanceLocationMode: nextMode } : x
+                        )
+                      );
+                    }}
+                  >
+                    {ATTENDANCE_LOCATION_MODES.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  {(emp.locations || []).filter((loc) => loc?.name).length > 0
+                    ? (emp.locations || []).filter((loc) => loc?.name).map((loc) => loc.name).join(", ")
+                    : "—"}
+                </td>
+                <td>
+                  <button className="btn small blue" onClick={() => saveEmployeeGpsSetting(emp)}>
+                    💾 Save
+                  </button>
+                </td>
+              </tr>
+            );
+          })
+        )}
+      </tbody>
+    </table>
+  </section>
+)}
+
+          {isAdmin && activeSidebar === "admin-company-calendar" && (
+          <section className="card">
+          <h2>Company Calendar (Holidays)</h2>
+
+          <div className="company_cal">
+            <div>
+          <label style={{ fontWeight: 600 }}>Month:</label>
+          <input type="month" value={holidayMonth} onChange={(e) => setHolidayMonth(e.target.value)} />
+          </div>
+          <div>
+          <label style={{ fontWeight: 600 }}>Select Holiday Date:</label>
+          <input type="date" value={holidayDate} onChange={(e) => setHolidayDate(e.target.value)} />
+          </div>
+          <div>
+          <label style={{ fontWeight: 600 }}>Type Holiday Name:</label>
+          <input
+            type="text"
+            placeholder="Holiday name"
+            value={holidayName}
+            onChange={(e) => setHolidayName(e.target.value)}
+            style={{ minWidth: 240 }}
+          />
+          </div>
+         <button className="btn blue" onClick={adminAddOrUpdateHoliday} style={{ marginTop: 20 }}>💾 Save Holiday</button>
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+          <table className="calendar data-table">
+            <thead>
+              <tr><th>Date</th><th>Name</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              {companyHolidays.length === 0 ? (
+                <tr><td>No holidays in this month.</td></tr>
+              ) : (
+                companyHolidays.map((h) => (
+                  <tr key={h.id}>
+                    <td style={{ color: "red", fontWeight: 700 }}>{h.date}</td>
+                    <td style={{ color: "red", fontWeight: 700 }}>{h.name}</td>
+                    <td>
+                      <button className="btn small red" onClick={() => adminDeleteHoliday(h.id)}>🗑 Delete</button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+          </div>
+          </section>
+          )}
+
+
+          {isAdmin && activeSidebar === "admin-att-overview" && (
+          <section className="card">
+          <h2>Attendance Overview (Calendar)</h2>
+
+            <div className="card" style={{ marginBottom: 16 }}>
+            <h3>Add Leave for Staff</h3>
+
+            <div className="form" style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div className="form-group">
+            <label>Staff</label>
+            <select
+            value={overviewLeaveUserId}
+            onChange={(e) => setOverviewLeaveUserId(e.target.value)}
+            >
+            <option value="">Select staff</option>
+            {Object.values(usersMap)
+            .sort((a, b) => (a.eid || "").localeCompare(b.eid || ""))
+            .map((u) => (
+              <option key={u.id} value={u.id}>
+                {(u.eid || "-")} - {u.name || u.email}
+              </option>
+            ))}
+            </select>
+            </div>
+
+            <div className="form-group">
+            <label>Start Date</label>
+            <input
+            type="date"
+            value={overviewLeaveStart}
+            onChange={(e) => setOverviewLeaveStart(e.target.value)}
+            />
+            </div>
+
+            <div className="form-group">
+            <label>End Date</label>
+            <input
+            type="date"
+            value={overviewLeaveEnd}
+            onChange={(e) => setOverviewLeaveEnd(e.target.value)}
+            />
+            </div>
+
+            <div className="form-group">
+            <label>Leave Type</label>
+            <select
+            value={overviewLeaveType}
+            onChange={(e) => setOverviewLeaveType(e.target.value)}
+            >
+            <option>Full Day</option>
+            <option>Morning Half</option>
+            <option>Evening Half</option>
+            </select>
+            </div>
+
+            <div className="form-group">
+            <label>Leave Name</label>
+            <select
+            value={overviewLeaveName}
+            onChange={(e) => setOverviewLeaveName(e.target.value)}
+            >
+            <option>Casual Leave</option>
+            <option>Annual Leave</option>
+            <option>Medical Leave</option>
+            <option>WithoutPay Leave</option>
+            <option>Maternity Leave</option>
+            </select>
+            </div>
+
+            <div className="form-group" style={{ minWidth: 220 }}>
+            <label>Reason</label>
+            <input
+            type="text"
+            value={overviewLeaveReason}
+            onChange={(e) => setOverviewLeaveReason(e.target.value)}
+            placeholder="Reason"
+            />
+            </div>
+
+            <div className="form-group" style={{ alignSelf: "flex-end" }}>
+            <button className="btn submit" onClick={adminCreateLeaveForStaff}>
+            Add Leave
+            </button>
+            </div>
+            </div>
+            </div>
+
+          <div className="att_overview">
+            <div className="att_overview_flex w18">
+              <label style={{ fontWeight: 600 }}>Month:</label>
+              <input type="month" value={overviewMonth} onChange={(e) => setOverviewMonth(e.target.value)} />
+            </div>
+            <div className="att_overview_flex w60">
+              <label style={{ fontWeight: 600 }}>Staff:</label>
+              <select value={overviewUserId} onChange={(e) => setOverviewUserId(e.target.value)}>
+                <option value="">-- Select staff --</option>
+                {Object.keys(usersMap || {})
+                  .sort((a, b) => (usersMap[a]?.eid || "").localeCompare(usersMap[b]?.eid || ""))
+                  .map((uid) => (
+                    <option key={uid} value={uid}>
+                      {(usersMap[uid]?.eid || "-")} - {(usersMap[uid]?.name || usersMap[uid]?.email || uid)}
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div className="att_overview_flex w20">
+              <button className="btn" onClick={() => { setOverviewUserId(""); setOverviewMonth(attendanceMonth || overviewMonth); }}>
+                Clear
+              </button>
+              <button
+                className="btn blue"
+                disabled={!overviewUserId}
+                style={{ opacity: !overviewUserId ? 0.6 : 1, cursor: !overviewUserId ? "not-allowed" : "pointer" }}
+                onClick={() => {
+                  if (!overviewUserId) return;
+                  openCreateAttendance(overviewUserId);
+                }}
+              >
+                ➕ Add Attendance
+              </button>
+            </div>
+          </div>
+
+          {!overviewUserId ? (
+          <div>Please select a staff.</div>
+          ) : (
+          <div>
+            <div className="calendar-grid calendar-card">
+              {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d) => (
+                <div key={d} className="pc_dayname">{d}</div>
+              ))}
+
+                {buildCalendarCells(overviewMonth).map((dateStr, idx) => {
+                  if (!dateStr) return <div key={idx} />;
+
+                  const weekday = new Date(dateStr + "T00:00:00").getDay(); // ✅ stable
+                  const isWeekend = weekday === 0 || weekday === 6;
+                  const isHoliday = !!holidayMap[dateStr];
+                  const isRedDay = isWeekend || isHoliday;
+                  const dayName = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][weekday];
+
+                  const att = findAttendanceByUserAndDate(overviewUserId, dateStr);
+                  const leaveAbbr = getLeaveAbbreviationForDate(overviewUserId, dateStr) || "";
+
+                  return (
+                    <div
+                      key={dateStr}
+                      style={{
+                        border: "2px solid #e5e7eb",
+                        borderRadius: 10,
+                        padding: 10,
+                        background: isHoliday ? "#fecaca" : isWeekend ? "#fef2f2" : "white"
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                            
+                        <div style={{ fontWeight: 900, color: isRedDay ? "#b91c1c" : "inherit" }}>
+                          <span className="weekday-mobile">{dayName}</span>
+                          {dateStr}
+                        </div>
+
+                        {leaveAbbr ? (
+                          <div style={{ fontWeight: 900, color: "#d97706" }}>{leaveAbbr}</div>
+                        ) : null}
+                      </div>
+
+                      {isHoliday && (
+                        <div style={{ marginTop: 6, color: "#b91c1c", fontWeight: 700, fontSize: 12 }}>
+                          <img src="https://flagcdn.com/16x12/mm.png" srcset="https://flagcdn.com/32x24/mm.png 2x, https://flagcdn.com/48x36/mm.png 3x"width="16"height="12"  alt="Myanmar"/> {holidayMap[dateStr]?.name}
+                        </div>
+                      )}
+
+                      <div style={{ marginTop: 8, fontSize: 13 }}>
+                        
+                        <div>
+                        <strong>In:</strong>{" "}
+                        {att?.clockIn
+                          ? formatTimeByViewMode(att.clockIn)
+                          : att?.clockInTime || "-"}
+                      </div>
+                      <div>
+                        <strong>Out:</strong>{" "}
+                        {att?.clockOut
+                          ? formatTimeByViewMode(att.clockOut)
+                          : att?.clockOutTime || "-"}
+                      </div>
+                      </div>
+
+                      <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
+                        <button
+                          className="btn small blue"
+                          onClick={() => {
+                            if (att) {
+                              openEditAttendance(att);
+                            } else {
+                              openCreateAttendance(overviewUserId, dateStr);
+                            }
+                          }}
+                        >
+                          {att ? "✏ Edit" : "➕ Add"}
+                        </button>
+                      </div>
+                      
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+                    )}
+              </section>
+            )}
+
+        {/* ADMIN: All Attendance */}
+        {isAdmin && activeSidebar==="admin-att" && (
+          <section className="card">
+            <h2>All Staff Attendance</h2>
+            <div className="staff_att_container">
+            <div className="staff_att_UI">
+              <input
+                placeholder="Search by employee ID, name, email, date..."
+                value={attendanceSearch}
+                onChange={(e) => setAttendanceSearch(e.target.value)}
+              />
+              <input type="month"
+                value={attendanceMonth}
+                onChange={(e) => setAttendanceMonth(e.target.value)}
+              
+              />
+              <button className="btn" onClick={() => setAttendanceSearch("")}>Clear</button>
+
+              <button className="btn blue" onClick={() => openCreateAttendance ()}> ➕ Add Attendance</button>
+          
+            </div>
+
+           
+            </div>
+
+            <table className="data-table">
+              <thead>
+              <tr>
+                <th>ID</th>
+                <th>User</th>
+                <th>Leave</th>
+                <th>Date</th>
+                <th>In</th>
+                <th>Out</th>
+                <th>In Loc</th>
+                <th>Out Loc</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+
+              <tbody>
+                {allAttendance.length===0 ? <tr><td colSpan="7">No attendance</td></tr> :
+                  filteredAttendance.map((a) => (
+                    <tr key={a.id} style={{
+                      color: isResignedHistoricalRow(a.userId, a.date) ? "#dc2626" : "inherit",
+                      fontWeight: isResignedHistoricalRow(a.userId, a.date) ? 700 : 400,
+                    }}>
+                      {/* <td>{usersMap[a.userId] || a.userId}</td> */}
+                       <td style={{ fontWeight: 700 }}>{getEid(a.userId) || "-"}</td>
+                       <td>{usersMap[a.userId]?.name || usersMap[a.userId]?.email || a.userId}</td>
+                      <td style={{ fontWeight: 700, color: "#d97706" }}>
+                        {getLeaveAbbreviationForDate(a.userId, a.date) || "—"}
+                      </td>
+                      <td>{a.date}</td>
+                      <td>{toMyanmarTime(a.clockIn)}</td>
+                      <td>{toMyanmarTime(a.clockOut)}</td>
+                      <td>{a.locationIn ? <a href={`https://maps.google.com/?q=${a.locationIn.latitude},${a.locationIn.longitude}`} target="_blank" rel="noreferrer">📍 View</a> : "-"}</td>
+                      <td>{a.locationOut ? <a href={`https://maps.google.com/?q=${a.locationOut.latitude},${a.locationOut.longitude}`} target="_blank" rel="noreferrer">📍 View</a> : "-"}</td>
+                      <td>
+                      <button className="btn small blue" onClick={() => openEditAttendance(a)}>
+
+                        ✏ Edit
+                      </button>
+                      </td>
+
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+            </section>
+        )}
+
+            {editingAttendance && (
+              <div className="modal-overlay" onClick={() => setEditingAttendance(null)}>
+                <div className="modal" onClick={(e) => e.stopPropagation()}>
+                  <h3>🕒 Edit Attendance</h3>
+
+                  <p>
+                    <b>User:</b> {displayUser(editingAttendance.userId)} <br />
+                    <b>Date:</b> {editingAttendance.date}
+                  </p>
+
+                  <div className="form" style={{ gap: 10 }}>
+                    <div className="form-group">
+                      <label>Clock In</label>
+                      <input
+                        type="time"
+                        value={editClockIn}
+                        onChange={(e) => setEditClockIn(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label>Clock Out</label>
+                      <input
+                        type="time"
+                        value={editClockOut}
+                        onChange={(e) => setEditClockOut(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, marginTop: 15 }}>
+                    <button className="btn blue" onClick={adminUpdateAttendanceTime}>
+                      💾 Save
+                    </button>
+                     <button  className="btn red" onClick={adminDeleteAttendance} >  🗑 Delete </button>
+                    <button className="btn red" onClick={() => setEditingAttendance(null)}>
+                      ✖ Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Add attend modal box */}
+            {creatingAttendance && (
+              <div className="modal-overlay">
+                <div className="modal">
+                  <h3>➕ Add Attendance</h3>
+                  
+                  <div className="form" style={{ gap: 12 }}>
+                    {/* Staff select */}
+                    <div>
+                       <label style={{ fontWeight: 600 }}>Select employee</label>
+                      <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)}>
+                      <option value="">Select employee</option>
+                      {Object.keys(usersMap)
+                        .sort((a, b) => (usersMap[a]?.eid || "").localeCompare(usersMap[b]?.eid || ""))
+                        .map((uid) => (
+                          <option key={uid} value={uid}>
+                            {(usersMap[uid]?.eid || "-")} - {displayUser(uid)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    
+                    {/* Date */}
+                    <div>
+                       <label style={{ fontWeight: 600 }}>For Single Day Insert</label>
+                      <input type="date" value={createDate} onChange={(e) => setCreateDate(e.target.value)}/>
+                      </div>
+                       <div>
+                      <label style={{ fontWeight: 600 }}>For Whole Month Insert</label>
+                      <input type="month" value={bulkMonth} onChange={(e) => setBulkMonth(e.target.value)} />
+                      <label style={{ display: "inline" }}>
+                      <input type="checkbox" checked={bulkWeekdaysOnly} onChange={(e) => setBulkWeekdaysOnly(e.target.checked)} style={{ width: 18,height:18,verticalAlign:"middle" }}/>
+                        Weekdays only (Mon–Fri)
+                      </label>
+                    </div>
+                      
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <div style={{ flex: 1 }}>
+                        <label>Clock In</label>
+                        <input type="time" value={createIn} onChange={(e) => setCreateIn(e.target.value)} />
+                      </div>
+
+                      <div style={{ flex: 1 }}>
+                        <label>Clock Out</label>
+                        <input type="time" value={createOut} onChange={(e) => setCreateOut(e.target.value)} />
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                      <button className="btn blue" onClick={adminCreateOrUpdateAttendance}>📅 Add Single Day</button>
+                      <button className="btn blue" onClick={adminBulkCreateMonthAttendance}>📅 Add Whole Month</button>
+                      <button  className="btn red" onClick={adminDeleteMonthAttendance}>  🗑 Delete Whole Month</button>
+                    </div>
+                    <div style={{ width: 100, margin: "0 auto"}}>
+                      <button className="btn red" onClick={() => setCreatingAttendance(false)}>✖ Cancel</button>
+                    </div>
+                  </div>
+            
+                  </div>
+                </div>
+            
+        )}
+
+         {isAdmin && activeSidebar==="admin-att-summary" && (
+            <section className="card" style={{ marginTop: 18 }}>
+              <h2>Monthly Attendance Summary </h2>
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+                <label style={{ fontWeight: 600 }}>Month:</label>
+                <input
+                  type="month"
+                  value={attendanceMonth}
+                  onChange={(e) => setAttendanceMonth(e.target.value)}
+                  style={{ width: 160 }}
+                />
+              </div>
+
+
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Employee ID</th>
+                    <th>Name</th>
+                    <th>Present Days</th>
+                    <th>Missing Clock In</th>
+                    <th>Missing Clock Out</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthlySummaryByUser.map((r) => (
+                    <tr key={r.uid}>
+                      <td style={{ fontWeight: 700 }}>{r.eid || "-"}</td>
+                      <td>{r.name}</td>
+                      <td>{r.presentDays}</td>
+                      <td style={{ color: r.missingClockIn > 0 ? "red" : "inherit" }}>
+                        {r.missingClockIn}
+                      </td>
+                      <td style={{ color: r.missingClockOut > 0 ? "red" : "inherit" }}>
+                        {r.missingClockOut}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+
+          )}
+
+
+        {/* ---- Admin: All Staff P/O Reports ---- */}
+        {isAdmin && activeSidebar === "admin-po" && (
+          <section className="card">
+            <h2>All Staff P/O Reports</h2>
+
+            <div className="all_po_req">
+              <input
+                placeholder="Search by name"
+                value={poSearch}
+                onChange={(e) => setPoSearch(e.target.value)}
+              />
+
+              <select
+                value={poDeptFilter}
+                onChange={(e) => setPoDeptFilter(e.target.value)}
+              >
+                <option value="">All Departments</option>
+                {departments.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+
+              <input
+                type="month"
+                value={poMonthFilter}
+                onChange={(e) => setPoMonthFilter(e.target.value)}
+              />
+
+              <button
+                className="btn"
+                onClick={() => {
+                  setPoSearch("");
+                  setPoDeptFilter("");
+                  setPoMonthFilter(getCurrentMonth());
+                }}
+              >
+                Reset
+              </button>
+            </div>
+
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Date</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Total</th>
+                  <th>Reason</th>
+                   <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredAllPoReports.length === 0 ? (
+                  <tr><td colSpan="5">No P/O records found.</td></tr>
+                ) : (
+                  filteredAllPoReports.map((p) => (
+                  <tr key={p.id} style={{
+                    color: isResignedHistoricalRow(p.userId, p.date) ? "#dc2626" : "inherit",
+                    fontWeight: isResignedHistoricalRow(p.userId, p.date) ? 700 : 400,
+                  }}>
+                     {/*  <td>{usersMap[p.userId] || p.userId}</td> */}
+                      <td>{displayUser(p.userId)}</td>
+
+                      <td>{p.date}</td>
+                      <td>{p.fromTime}</td>
+                      <td>{p.toTime}</td>
+                      <td>{p.totalTimeByHour}</td>
+                      <td>{p.POreason}</td>
+                      <td>{colorStatus(p.status || "pending")}</td>
+                      <td>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          {(p.status || "pending") === "pending" && (
+                            <>
+                              <button
+                                className="btn small"
+                                onClick={() => updatePoStatus(p.id, "approved")}
+                              >
+                                ✅
+                              </button>
+                              <button
+                                className="btn small red"
+                                onClick={() => updatePoStatus(p.id, "rejected")}
+                              >
+                                ❌
+                              </button>
+                            </>
+                          )}
+
+                          <button
+                            className="btn small"
+                            onClick={() => deletePoRequest(p.id)}
+                          >
+                             🗑️
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+                      </section>
+        )}
+
+
+        {/* ADMIN: All Leave Requests */}
+        {isAdmin && activeSidebar==="admin-leave" && (
+          <section className="card">
+            <h2>All Staff Leave Requests</h2>
+
+             <div className="filters all_leave_req">
+              <input
+                type="text"
+                placeholder="Search by name"
+                value={nameFilter}
+                onChange={(e) => setNameFilter(e.target.value)}
+              />
+              <select
+                value={deptFilter}
+                onChange={(e) => setDeptFilter(e.target.value)}
+              >
+                <option value="">All Departments</option>
+                {departments.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+              <div className="flex-date">
+                <label>Start Date</label>
+                <input
+                    type="date"
+                    value={fromDate}
+                    onChange={(e) => setFromDate(e.target.value)}
+                  />
+              </div>
+              <div className="flex-date">
+                  <label>End Date</label>
+                  <input
+                    type="date"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                  />
+              </div>
+              <div style={{ display: "flex", gap: 12, alignItems: "center",justifyContent:"center",marginBottom:20 }}>
+              <label style={{ display: "flex",alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={showApprovedLeave}
+                  onChange={(e) => setShowApprovedLeave(e.target.checked)}
+                />
+                Approved
+              </label>
+
+              <label style={{ display: "flex", alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={showRejectedLeave}
+                  onChange={(e) => setShowRejectedLeave(e.target.checked)}
+                />
+                Rejected
+              </label>
+            </div>
+              <button className="btn" onClick={resetFilters}>Reset</button>
+            </div>
+
+            <table className="data-table">
+              <thead>
+              <tr>
+                <th>User</th>
+                <th>Apply<br></br>Date</th>
+                <th>Leave<br></br>Start</th>
+                <th>Leave<br></br>End</th>
+                <th>Leave<br></br>Type</th>
+                <th>Leave<br></br>Name</th>
+                <th>Reason</th>
+                <th>Leader</th>
+               {/*  <th>Admin</th> */}
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+
+              <tbody>
+                {filteredAllMemberLeaves.length===0 ? <tr><td colSpan="10">No leave requests</td></tr> :
+                  filteredAllMemberLeaves.map((lv) => (
+                    
+                    <tr key={lv.id} style={{
+                    color: isResignedHistoricalRow(lv.userId, lv.date) ? "#dc2626" : "inherit",
+                    fontWeight: isResignedHistoricalRow(lv.userId, lv.date) ? 700 : 400,
+                  }}>
+                     {/*  <td>{usersMap[lv.userId] || lv.userId}</td> */}
+                     <td>{displayUser(lv.userId)}</td>
+                     <td>{lv.createdAt?.split("T")[0]}</td>
+                      <td>{lv.startDate}</td>
+                      <td>{lv.endDate}</td>
+                      <td>{lv.leaveType}</td>
+                      <td>{lv.leaveName}</td>
+                      <td>{lv.reason}</td>
+                      <td>{lv.leaderActionBy ? displayUser(lv.leaderActionBy) : "-"}</td>
+                     {/*  <td>{lv.adminActionBy ? displayUser(lv.adminActionBy) : "-"}</td> */}
+                      <td>{colorStatus(lv.status)}</td>
+                      <td>
+                        <div style={{ display: "flex", justifyContent: "start", gap: "2px" }}>
+                          <button className="btn small" onClick={() => adminUpdateLeaveStatus(lv.id, "approved", lv)}>✅</button>
+                          <button className="btn small red" onClick={() => adminUpdateLeaveStatus(lv.id, "rejected", lv)}>❌</button>
+
+                          <button
+                            className="btn small blue"
+                             onClick={() => {
+                              
+                              setEditingLeave(lv);
+                              setEditLeaveStart(lv.startDate);
+                              setEditLeaveEnd(lv.endDate);
+                              setEditLeaveType(lv.leaveType || "Full Day");
+                              setEditLeaveName(lv.leaveName || "Casual");
+                              setEditLeaveReason(lv.reason || "");
+                            }}
+                          >
+                            ✏ Edit
+                          </button>
+                          <button
+                            className="btn small red"
+                            onClick={() => deleteLeaveRequest(lv.id)}
+                          >
+                            🗑️
+                          </button>
+
+
+                        </div>
+                      </td>
+
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+
+            {editingLeave && (
+              <div className="modal-overlay" onClick={() => setEditingLeave(null)}>
+                <div className="modal" onClick={(e) => e.stopPropagation()}>
+                  <h3>✏ Edit Leave Request</h3>
+
+                  <p><b>User:</b> {displayUser(editingLeave.userId)}</p>
+
+                  <div className="form">
+                    <label>Start Date</label>
+                    <input type="date" value={editLeaveStart} onChange={(e) => setEditLeaveStart(e.target.value)} />
+
+                    <label>End Date</label>
+                    <input type="date" value={editLeaveEnd} onChange={(e) => setEditLeaveEnd(e.target.value)} />
+
+                    <div style={{ display: "flex", justifyContent: "start", gap: "2px",alignItems:"center" }}>
+                    <label>Leave Type</label>
+                    <select value={editLeaveType} onChange={(e) => setEditLeaveType(e.target.value)}>
+                      <option>Full Day</option>
+                      <option>Morning Half</option>
+                      <option>Evening Half</option>
+                    </select>
+
+                    <label>Leave Name</label>
+                    <select value={editLeaveName} onChange={(e) => setEditLeaveName(e.target.value)}>
+                      <option>Casual Leave</option>
+                      <option>Annual Leave</option>
+                      <option>Medical Leave</option>
+                      <option>WithoutPay Leave</option>
+                    </select>
+                   
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "start", gap: "2px",alignItems:"center" }}>
+                     <label>Reason</label>
+                     <input type="text" value={editLeaveReason} onChange={(e) => setEditLeaveReason(e.target.value)} />
+                    </div>
+
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, marginTop: 15 }}>
+                    <button className="btn blue" onClick={adminSaveLeaveEdit}>💾 Save</button>
+                    <button className="btn red" onClick={() => setEditingLeave(null)}>✖ Cancel</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+
+          </section>
+        )}
+
+         {/* ---- Admin: all staff leave balance edit ---- */}
+        {isAdmin && activeSidebar === "admin-leave-balance" && (
+            <section className="card">
+        <h2>All Staff Leave Balance Management ({currentYear})</h2>
+
+        {/* Search */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems:"baseline" }}>
+          <input
+            value={leaveSearch}
+            onChange={(e) => setLeaveSearch(e.target.value)}
+            placeholder="Search by Employee ID, name, email..."
+            style={{ flex: 1 }}
+          />
+          <button className="btn" onClick={() => setLeaveSearch("")}>Clear</button>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table" style={{ minWidth: 900 }}>
+            <thead>
+              <tr>
+                <th style={{ width: 120 }}>Employee ID</th>
+                <th style={{ width: 260 }}>Name</th>
+                <th>Leave Balance</th>
+                <th style={{ width: 120 }}>Action</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {filteredUserIdsForLeave.map((uid) => {
+                // keep your setValue logic (same as your current code)
+                const setValue = (type, field, value) => {
+                  setLeaveBalances((prev) => ({
+                    ...prev,
+                    [uid]: {
+                      ...(prev[uid] || {}),
+                      balances: {
+                        ...(prev[uid]?.balances || {}),
+                        [type]: {
+                          ...(prev[uid]?.balances?.[type] || {}),
+                          [field]: Number(value),
+                        },
+                      },
+                    },
+                  }));
+                };
+
+                return (
+                  <tr key={uid}>
+                    <td style={{ fontWeight: 700 }}>
+                      {usersMap[uid]?.eid || "-"}
+                    </td>
+
+                    <td>
+                      <div style={{ fontWeight: 700 }}>{displayUser(uid)}</div>
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        {usersMap[uid]?.email || ""}
+                      </div>
+                    </td>
+
+                    {/* Leave list (your sketch) */}
+                    <td>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                          {LEAVE_TYPES.map((t) => {
+                          const base = getBal(uid, t.key, "base");
+                          const carry = t.hasCarry ? getBal(uid, t.key, "carry") : 0;
+                          const allowance = Number(base) + Number(carry);
+
+                          // manual taken stored in leaveBalances
+                          const manualTaken = getBal(uid, t.key, "taken");
+
+                          // if manual taken is empty/null, fallback to computed taken from leave requests
+                          const computedTaken = getLeaveTaken(uid, t.key);
+                          const taken = (manualTaken !== "" && manualTaken !== null && manualTaken !== undefined)
+                            ? Number(manualTaken)
+                            : Number(computedTaken);
+
+                          const balance = allowance - taken;
+
+
+                          return (
+                            <div
+                              key={t.key}
+                              style={{
+                                border: "1px solid #e9eef5",
+                                borderRadius: 10,
+                                padding: 12,
+                                background: "#fff",
+                              }}
+                            >
+                              <div style={{ width: 670, display: "flex", alignItems: "center", gap: 12 }}>
+                                <div style={{ width: 100, fontWeight: 700 }}>{t.label}</div>
+
+                                {/* Header row inside */}
+                                <div style={{ display: "grid", gridTemplateColumns: t.hasCarry ? "120px 120px 120px 120px" : "120px 120px 120px", gap: 10, alignItems: "center" }}>
+                                  <div style={{ fontSize: 12, color: "#666" }}>Allowance</div>
+                                  {t.hasCarry && <div style={{ fontSize: 12, color: "#666" }}>Carry</div>}
+                                  <div style={{ fontSize: 12, color: "#666" }}>Taken</div>
+                                  <div style={{ fontSize: 12, color: "#666" }}>Balance</div>
+
+                                  {/* Inputs row */}
+                                  <input
+                                    type="number"
+                                    value={base}
+                                    onChange={(e) => setValue(t.key, "base", e.target.value)}
+                                   
+                                    placeholder="Base"
+                                  />
+
+                                  {t.hasCarry && (
+                                    <input
+                                      type="number"
+                                      value={carry}
+                                      onChange={(e) => setValue(t.key, "carry", e.target.value)}
+                                     
+                                      placeholder="Carry"
+                                    />
+                                  )}
+
+                                  {/* Taken: usually computed (read-only). If you want manual, change to input + store. */}
+                                 <input
+                                  type="number"
+                                  value={taken}
+                                  onChange={(e) => setValue(t.key, "taken", e.target.value)}
+                                  placeholder="Taken"
+                                />
+
+
+                                  <input
+                                    type="number"
+                                    value={balance}
+                                    readOnly
+                                    style={{
+                                      background: "#f7f8fa",
+                                      color: balance < 0 ? "red" : "#111",
+                                      fontWeight: 700,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </td>
+
+                    <td>
+                      <button className="btn small blue" onClick={() => saveLeaveBalance(uid)}>
+                        💾 Save
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      )}
+
+
+        {/* ---- Admin: Compact All Staff Leave Summary (with memory) ---- */}
+        {isAdmin && activeSidebar === "admin-leave-summary" && (
+          <section className="card">
+            <h2>All Staff Leave Summary</h2>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "baseline", marginBottom: 12 }}>
+            <input
+              style={{ flex: 1 }}
+              placeholder="Search by employee ID, name, email..."
+              value={leaveSummarySearch}
+              onChange={(e) => setLeaveSummarySearch(e.target.value)}
+            />
+            <button className="btn" onClick={() => setLeaveSummarySearch("")}>Clear</button>
+          </div>
+
+
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>User</th>
+                  <th>Leave Type</th>
+                  <th>Allowance</th>
+                  <th>Taken</th>
+                  <th>Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaveSummaryUids.map((uid) => {
+                  const leaveTypes = {
+                    "Casual Leave": 6,
+                    "Annual Leave": 10,
+                    "Medical Leave": 90,
+                    "WithoutPay Leave": 10,
+                    "Maternity Leave": 98,
+                  };
+
+                  const selectedType = leaveSelections[uid] || "Casual Leave";
+
+                  // ✅ Allowance from leaveBalances (carry only for Annual Leave)
+                  const base = leaveBalances?.[uid]?.balances?.[selectedType]?.base ?? 0;
+                  const carry =
+                    selectedType === "Annual Leave"
+                      ? (leaveBalances?.[uid]?.balances?.[selectedType]?.carry ?? 0)
+                      : 0;
+
+                  const allowance = Number(base) + Number(carry);
+
+                  // ✅ Taken from leaveBalances (manual admin edit)
+                  const taken = Number(
+                    leaveBalances?.[uid]?.balances?.[selectedType]?.taken ?? 0
+                  );
+
+                  const balance = Math.max(0, allowance - taken);
+
+                  return (
+                    <tr key={uid}>
+                      <td style={{ fontWeight: 700 }}>{getEid(uid) || "-"}</td>
+                      <td>{displayUser(uid)}</td>
+
+                      <td>
+                        <select
+                          value={selectedType}
+                          onChange={(e) =>
+                            setLeaveSelections((prev) => ({
+                              ...prev,
+                              [uid]: e.target.value,
+                            }))
+                          }
+                        >
+                          {Object.keys(leaveTypes).map((name) => (
+                            <option key={name}>{name}</option>
+                          ))}
+                        </select>
+                      </td>
+
+                      <td>{allowance}</td>
+                      <td>{taken}</td>
+                      <td style={{ color: balance === 0 ? "red" : "inherit" }}>
+                        {balance}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+
+            </table>
+          </section>
+        )}
+
+
+
+        {/* ADMIN: All OT Requests */}
+        {isAdmin && activeSidebar==="admin-ot" && (
+          <section className="card">
+            <h2>All Overtime Requests</h2>
+
+            <div className="filters all_ot_req">
+                <input
+                  type="text"
+                  placeholder="Search by name"
+                  value={nameFilter}
+                  onChange={(e) => setNameFilter(e.target.value)}
+                />
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value)}
+                />
+            <div style={{ display: "flex", gap: 12, alignItems: "center",justifyContent:"center",marginBottom:20 }}>
+              <label style={{ display: "flex", alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={showApprovedOT}
+                  onChange={(e) => setShowApprovedOT(e.target.checked)}
+                />
+                Approved
+              </label>
+
+              <label style={{ display: "flex",alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={showRejectedOT}
+                  onChange={(e) => setShowRejectedOT(e.target.checked)}
+                />
+                Rejected
+              </label>
+            </div>
+              <button className="btn" onClick={resetFilters}>Reset</button>
+              </div>
+
+            <table className="data-table">
+              <thead><tr><th>User</th><th>Date</th><th>Time</th><th>Total</th><th>Reason</th><th>Approver</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody>
+                {filteredAllMemberOT.length===0 ? <tr><td colSpan="8">No OT requests</td></tr> :
+                  filteredAllMemberOT.map((ot) => (
+                    <tr key={ot.id} style={{
+                      color: isResignedHistoricalRow(ot.userId, ot.date) ? "#dc2626" : "inherit",
+                      fontWeight: isResignedHistoricalRow(ot.userId, ot.date) ? 700 : 400,
+                    }}>
+                      {/* <td>{usersMap[ot.userId] || ot.userId}</td> */}
+                      <td>{displayUser(ot.userId)}</td>
+
+                      <td>{ot.date}</td>
+                      <td>{ot.startTime} - {ot.endTime}</td>
+                      <td>{ot.totalTime}</td>
+                      <td>{ot.reason}</td>
+                      <td>{ot.actionBy ? displayUser(ot.actionBy) : "-"}</td>
+                      <td>{colorStatus(ot.status)}</td>
+                      <td>
+                        <div style={{ display: "flex", justifyContent: "center", gap: "4px" }}>
+                        <button className="btn small" onClick={()=>updateOvertimeStatus(ot.id,"approved")}>✅</button>
+                        <button className="btn small red" onClick={()=>updateOvertimeStatus(ot.id,"rejected")}>❌</button>
+                        <button
+                          className="btn small red"
+                          onClick={() => deleteOvertimeRequest(ot.id)}
+                        >
+                          🗑️
+                        </button>
+
+
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </section>
+        )}
+
+      
+
+        {/* ADMIN: Summary */}
+        {isAdmin && activeSidebar==="admin-summary" && (
+          <section className="card">
+            <h2>Monthly Summary</h2>
+            <table className="data-table">
+              <thead><tr><th>User</th><th>Attendance</th><th>Approved Leave</th><th>Approved OT</th></tr></thead>
+              <tbody>
+                {Object.keys(summary).length===0 ? <tr><td colSpan="4">No data</td></tr> :
+                  Object.entries(summary).map(([uid,s]) => (
+                    <tr key={uid}>{/* <td>{usersMap[uid] || uid}</td> */}<td>{displayUser(uid)}</td><td>{s.attend}</td><td>{s.leave}</td><td>{s.overtime}</td></tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </section>
+        )}
+
+        {/* ADMIN: Payroll Calculator */}
+        {canAccessPayroll && isAdmin && activeSidebar === "admin-payroll" && (
+          <section className="card">
+            <h2>Payroll Calculator</h2>
+            <PayrollCalculator usersMap={usersMap} employees={employees} />
+          </section>
+        )} 
+
+
+  {canAccessPayroll && isAdmin && activeSidebar === "admin-payroll-summary" && (
+  <section className="card">
+    <h2>Payroll Summary</h2>
+
+    <div className="table-scroll">
+      <table className="data-table payroll-summary-clean">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Employee ID</th>
+            <th>Position</th>
+            <th>Team</th>
+            <th>Salary<br></br>Transfer</th>
+            <th>Salary<br></br>in Rate</th>
+            <th>Date</th>
+            <th>Pay Month</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+
+        <tbody>
+        {allPayroll.length === 0 ? (
+        <tr>
+        <td colSpan="9">No payroll records found.</td>
+        </tr>
+        ) : (
+        allPayroll.map((p) => {
+          const fullName = p.name || "";
+
+          const match = fullName.match(/^([^\u3040-\u30FF]*)([\u3040-\u30FF].*)?$/);
+
+          const enName = match?.[1]?.trim() || fullName;
+          const jpName = match?.[2]?.trim() || "";
+
+        return (
+        <tr key={p.id}>
+          <td>
+            <div style={{ fontWeight: 700 }}>{enName}</div>
+            {jpName && (
+              <div style={{ fontSize: 14, color: "#666" }}>{jpName}</div>
+            )}
+            <div style={{ fontSize: 12, color: "#777" }}>
+              {p.languageLevel}
+            </div>
+          </td>
+
+          <td>{p.staffId}</td>
+          <td>{p.staffposition}</td>
+          <td>{p.staffteam}</td>
+          <td>{p.salaryTransfer?.toLocaleString()}</td>
+          <td>{p.preferentialTotal?.toLocaleString()}</td>
+          <td>{p.createdAt?.slice(0, 10)}</td>
+          <td>For {p.month}</td>
+          <td>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                gap: "6px",
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                className="btn small blue"
+                onClick={() => setSelectedPayroll(p)}
+              >
+                View
+              </button>
+              <button
+                className="btn small green"
+                onClick={() => exportPayslip(p)}
+              >
+                Download
+              </button>
+              <button
+                className="btn small blue"
+                onClick={() => sendPayslip(p)}
+              >
+                Send
+              </button>
+              <button
+                className="btn small red"
+                onClick={() => deletePayrollSummary(p.id)}
+              >
+                🗑
+              </button>
+            </div>
+          </td>
+        </tr>
+        );
+        })
+        )}
+        </tbody>
+      </table>
+    </div>
+
+    {selectedPayroll && (
+      <div className="modal-overlay" onClick={() => setSelectedPayroll(null)}>
+        <div className="modal payroll-detail-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="payroll-modal-header">
+            <div>
+              <h3 style={{ marginBottom: 4 }}>{selectedPayroll.name} - Full Payroll Detail</h3>
+              <p style={{ margin: 0, color: "#666" }}>
+                {selectedPayroll.staffId} • For {selectedPayroll.month}
+              </p>
+            </div>
+            <button className="btn red" onClick={() => setSelectedPayroll(null)}>Close</button>
+          </div>
+
+          {(() => {
+            const requiredFields = [
+              "name","staffId","languageLevel","type","staffposition","staffteam",
+              "standardDays","workedDays","actualHours","annualLeave","casualLeave","absentDays",
+              "holidayWorkDays","holidayWorkHours","overtimeHours","lateHours",
+              "languageAllowance","jobAllowance","directorAllowance",
+              "basicLatest","fixedOvertime",
+              "absenceDeduction","lateDeduction","fixedOvertimeDeduction","ssb","incomeTax",
+              "overtimeAllowance","holidayAllowance","wfhAllowance","bonus",
+              "salaryTransfer","preferentialTotal","cbRate","createdAt","month"
+            ];
+
+            const missingFields = requiredFields.filter(
+              (key) =>
+                selectedPayroll[key] === undefined ||
+                selectedPayroll[key] === null ||
+                selectedPayroll[key] === ""
+            );
+
+            const formatValue = (value) => {
+              if (value === undefined || value === null || value === "") return "-";
+              if (typeof value === "number") return value.toLocaleString();
+              if (typeof value === "boolean") return value ? "Yes" : "No";
+              return String(value);
+            };
+
+            const sections = [
+              {
+                title: "Employee Info",
+                fields: [
+                  ["Name", "name"],
+                  ["Staff Id", "staffId"],
+                  ["Language Level", "languageLevel"],
+                  ["Employement Type", "type"],
+                  ["Staff position", "staffposition"],
+                  ["Staff team", "staffteam"]
+                ]
+              },
+              {
+                title: "Attendance",
+                fields: [
+                  ["Standard Days", "standardDays"],
+                  ["Working Days", "workedDays"],
+                  ["Actual Hours", "actualHours"],
+                  ["Annual Leave", "annualLeave"],
+                  ["Casual Leave", "casualLeave"],
+                  ["Absent Days", "absentDays"],
+                  ["Holiday Work Days", "holidayWorkDays"],
+                  ["Holiday Work Hours", "holidayWorkHours"],
+                  ["Overtime Hours", "overtimeHours"],
+                  ["Late Hours", "lateHours"]
+                ]
+              },
+              {
+                title: "Allowances / Earnings",
+                fields: [
+                  ["Language Allowance", "languageAllowance"],
+                  ["Job Allowance", "jobAllowance"],
+                  ["Director Allowance", "directorAllowance"],
+                  ["Basic Latest", "basicLatest"],
+                  ["Fixed Overtime", "fixedOvertime"],
+                  ["Overtime Allowance", "overtimeAllowance"],
+                  ["Holiday Allowance", "holidayAllowance"],
+                  ["WFH Allowance", "wfhAllowance"],
+                  ["Bonus", "bonus"]
+                ]
+              },
+              {
+                title: "Deductions",
+                fields: [
+                  ["Absence Deduction", "absenceDeduction"],
+                  ["Late Deduction", "lateDeduction"],
+                  ["FixedOvertime Deduction", "fixedOvertimeDeduction"],
+                  ["SSB", "ssb"],
+                  ["Income Tax", "incomeTax"]
+                ]
+              },
+              {
+                title: "Payment Summary",
+                fields: [
+                  ["Salary Transfer", "salaryTransfer"],
+                  ["Salary in Rate", "preferentialTotal"],
+                  ["CB Rate", "cbRate"],
+                  ["Date", "createdAt"],
+                  ["Pay Month", "month"]
+                ]
+              }
+            ];
+
+            return (
+              <>
+                <div
+                  style={{
+                    marginBottom: 16,
+                    padding: 12,
+                    borderRadius: 10,
+                    background: missingFields.length === 0 ? "#ecfdf5" : "#fff7ed",
+                    border: missingFields.length === 0 ? "1px solid #10b981" : "1px solid #f59e0b"
+                  }}
+                >
+                  <strong>
+                    Parse Check: {missingFields.length === 0 ? "All required fields parsed successfully" : `${missingFields.length} field(s) missing`}
+                  </strong>
+                  {missingFields.length > 0 && (
+                    <div style={{ marginTop: 8, fontSize: 14 }}>
+                      Missing: {missingFields.join(", ")}
+                    </div>
+                  )}
+                </div>
+
+                <div className="payroll-detail-grid">
+                  {sections.map((section) => (
+                    <div key={section.title} className="payroll-section-card">
+                      <h4>{section.title}</h4>
+                      {section.fields.map(([label, key]) => (
+                        <div key={key} className="modal-row">
+                          <strong>{label}</strong>
+                          <span>{formatValue(selectedPayroll[key])}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+
+                <details style={{ marginTop: 20 }}>
+                  <summary style={{ cursor: "pointer", fontWeight: 700 }}>
+                    Show Raw Parsed Data
+                  </summary>
+
+                  <div className="modal-content" style={{ marginTop: 12 }}>
+                    {Object.entries(selectedPayroll).map(([key, value]) => (
+                      <div key={key} className="modal-row">
+                        <strong>{key}</strong>
+                        <span>{formatValue(value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              </>
+            );
+          })()}
+        </div>
+      </div>
+    )}
+  </section>
+)}
+
+    {isAdmin && activeSidebar === "admin-export" && (
+  <section className="card">
+    <h2>Export Excel</h2>
+
+    <div className="export_excel" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+      <label style={{ fontWeight: 700 }}>Month:</label>
+      <input type="month" value={exportMonth} onChange={(e) => setExportMonth(e.target.value)} />
+
+      <label style={{ fontWeight: 700 }}>Staff:</label>
+      <select value={exportUserId} onChange={(e) => setExportUserId(e.target.value)}>
+        <option value="">-- All / Use search --</option>
+
+        {Object.entries(usersMap || {})
+          .sort(([, a], [, b]) => {
+            const ida = a?.eid || "";
+            const idb = b?.eid || "";
+            return ida.localeCompare(idb, undefined, { numeric: true });
+          })
+          .map(([uid, u]) => (
+            <option key={uid} value={uid}>
+              {u.eid || "-"} - {u.name || u.email || uid}
+            </option>
+          ))}
+      </select>
+
+      <input type="text" placeholder="Search by ID / Name / Email" value={exportUserQuery} onChange={(e) => setExportUserQuery(e.target.value)}/>
+
+      <button className="btn" onClick={() => { setExportUserId(""); setExportUserQuery(""); }}>
+        Clear Filter
+      </button>
+    </div>
+
+    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 16 }}>
+      <button className="btn blue" onClick={exportAttendanceExcelFiltered}>Export Attendance</button>
+      <button className="btn blue" onClick={exportEmployeesExcelFiltered}>Export Employees</button>
+      <button className="btn blue" onClick={exportOTExcelFiltered}>Export OT</button>
+      <button className="btn blue" onClick={exportLeaveExcelFiltered}>Export Leave</button>
+    </div>
+  </section>
+)}
+
+    </main>
+    </div>
+  );
+}
