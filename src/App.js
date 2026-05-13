@@ -11,6 +11,8 @@ import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 import { collection, getDocs, onSnapshot,orderBy } from "firebase/firestore";// already imported, just make sure
 import { app, db, auth } from "./firebase";
+import "./App.css";
+import PayrollCalculator from "./PayrollCalculator";
 
 import {
   writeBatch,
@@ -37,8 +39,7 @@ import {
 } from "firebase/auth";
 
 
-import "./App.css";
-import PayrollCalculator from "./PayrollCalculator";
+
 
 
 // sounds (place files in /public folder)
