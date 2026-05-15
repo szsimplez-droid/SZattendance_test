@@ -11,8 +11,6 @@ import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 import { collection, getDocs, onSnapshot,orderBy } from "firebase/firestore";// already imported, just make sure
 import { app, db, auth } from "./firebase";
-import "./App.css";
-import PayrollCalculator from "./PayrollCalculator";
 
 import {
   writeBatch,
@@ -39,7 +37,8 @@ import {
 } from "firebase/auth";
 
 
-
+import "./App.css";
+import PayrollCalculator from "./PayrollCalculator";
 
 
 // sounds (place files in /public folder)
@@ -140,6 +139,7 @@ export default function App() {
   // attendance / lists
   const [attendance, setAttendance] = useState([]);
   const [allAttendance, setAllAttendance] = useState([]);
+   const [overviewAttendance, setOverviewAttendance] = useState([]);
   const [leaves, setLeaves] = useState([]);
   const [deptFilter, setDeptFilter] = useState("");
   const [allLeaves, setAllLeaves] = useState([]);
@@ -163,6 +163,7 @@ const [leaveNameFilter, setLeaveNameFilter] = useState("");
 const [leaveFromDate, setLeaveFromDate] = useState("");
 const [leaveToDate, setLeaveToDate] = useState("");
 const [otNameFilter, setOtNameFilter] = useState("");
+const [openLeaveBalanceRows, setOpenLeaveBalanceRows] = useState({});
 
 const [attendanceSearch, setAttendanceSearch] = useState("");
 const [attendanceMonth, setAttendanceMonth] = useState(() => {
@@ -170,6 +171,19 @@ const [attendanceMonth, setAttendanceMonth] = useState(() => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // "YYYY-MM"
 });
 
+// Attendance Overview controls
+const [overviewLeaveUserId, setOverviewLeaveUserId] = useState("");
+const [overviewLeaveStart, setOverviewLeaveStart] = useState("");
+const [overviewLeaveEnd, setOverviewLeaveEnd] = useState("");
+const [overviewLeaveType, setOverviewLeaveType] = useState("Full Day");
+const [overviewLeaveName, setOverviewLeaveName] = useState("Casual Leave");
+const [overviewLeaveReason, setOverviewLeaveReason] = useState("");
+const [overviewUserId, setOverviewUserId] = useState("");
+const [overviewMonth, setOverviewMonth] = useState(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+});
+const [overviewLeaves, setOverviewLeaves] = useState([]);
 
 // Admin filters: show approved/rejected (pending is default)
 const [showApprovedLeave, setShowApprovedLeave] = useState(false);
@@ -259,7 +273,7 @@ const [openMenuGroup, setOpenMenuGroup] = useState("myMenu");
 // open in new tab end
 
 //still login start
-useEffect(() => {
+/* useEffect(() => {
   const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
     try {
       if (!firebaseUser) {
@@ -293,14 +307,90 @@ useEffect(() => {
       setMessage(
         <>
           Welcome {data.name || firebaseUser.email}
-          {/* <br />
-          You are now logged in as {data.role} */}
         </>
       );
 
       if (data.location) setUserSavedLocation(data.location);
     } catch (err) {
       console.error("Auth restore error:", err);
+    } finally {
+      setAuthLoading(false);
+    }
+  });
+
+  return () => unsub();
+}, []); */
+
+useEffect(() => {
+  const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    try {
+      if (!firebaseUser) {
+        setUser(null);
+        setRole("");
+        setRoles([]);
+        setName("");
+        setMessage("");
+        setAuthLoading(false);
+
+        clearCache(CACHE_KEYS.profile);
+
+        return;
+      }
+
+      setUser(firebaseUser);
+
+      // ---------------- LOAD CACHE FIRST ----------------
+      const cached = loadCache(CACHE_KEYS.profile);
+
+      if (cached && cached.uid === firebaseUser.uid) {
+        setRole(cached.role || "");
+        setRoles(cached.roles || []);
+        setName(cached.name || "");
+
+        if (cached.location) {
+          setUserSavedLocation(cached.location);
+        }
+      }
+
+      // ---------------- FIREBASE REFRESH ----------------
+      const uid = firebaseUser.uid;
+
+      const ud = await getDoc(doc(db, "users", uid));
+
+      if (!ud.exists()) {
+        notify("User record not found");
+        return;
+      }
+
+      const data = ud.data();
+
+      const rolesArr =
+        data.roles || (data.role ? [data.role] : []);
+
+      setRole(data.role || "");
+      setRoles(rolesArr);
+      setName(data.name || "");
+
+      if (data.location) {
+        setUserSavedLocation(data.location);
+      }
+
+      // ---------------- SAVE CACHE ----------------
+      saveCache(CACHE_KEYS.profile, {
+        uid,
+        role: data.role || "",
+        roles: rolesArr,
+        name: data.name || "",
+        location: data.location || null,
+      });
+
+      setMessage(
+        <>
+          Welcome {data.name || firebaseUser.email}
+        </>
+      );
+    } catch (err) {
+      console.error(err);
     } finally {
       setAuthLoading(false);
     }
@@ -366,6 +456,62 @@ const openNotification = (n) => {
 };
 
 // notifications end
+
+/* ---------------- pagination ---------------- */
+  const PAGE_SIZE = 10;
+  
+
+  const [pageMap, setPageMap] = useState({});
+
+  const getPage = (key) => pageMap[key] || 1;
+
+  const setPage = (key, page) => {
+    setPageMap((prev) => ({
+      ...prev,
+      [key]: page,
+    }));
+  };
+
+  const paginate = (list, key) => {
+    const page = getPage(key);
+    const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+    const safePage = Math.min(page, totalPages);
+
+    const start = (safePage - 1) * PAGE_SIZE;
+    const rows = list.slice(start, start + PAGE_SIZE);
+
+    return {
+      rows,
+      page: safePage,
+      totalPages,
+    };
+  };
+
+   // ---------------- CACHE HELPERS ----------------
+const CACHE_KEYS = {
+  profile: "cached_profile",
+  employees: "cached_employees",
+  usersMap: "cached_users_map",
+};
+
+const saveCache = (key, value) => {
+  localStorage.setItem(key, JSON.stringify(value));
+};
+
+const loadCache = (key, fallback = null) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const clearCache = (key) => {
+  localStorage.removeItem(key);
+};
+
+// cached helper end
 
   const emptyEmployeeForm = {
     employeeCode: "",
@@ -486,6 +632,8 @@ const openNotification = (n) => {
       if (selectedEmpId) {
         // UPDATE existing
         await updateDoc(doc(db, "users", selectedEmpId), payload);
+        clearCache(CACHE_KEYS.employees);
+        clearCache(CACHE_KEYS.usersMap);
         notify("✅ Employee updated");
       } else {
         // CREATE new
@@ -493,6 +641,8 @@ const openNotification = (n) => {
           ...payload,
           createdAt: new Date().toISOString(),
         });
+        clearCache(CACHE_KEYS.employees);
+        clearCache(CACHE_KEYS.usersMap);
         notify("✅ New employee created");
       }
 
@@ -653,6 +803,10 @@ const openNotification = (n) => {
         updatedBy: auth.currentUser?.uid || null,
         leaderId: employeeForm.leaderId || "",
       });
+
+      if (selectedEmpId === user?.uid) {
+        clearCache(CACHE_KEYS.profile);
+      }
 
       notify("✅ Employee updated");
       setEmployeeForm(emptyEmployeeForm);
@@ -1024,15 +1178,7 @@ const loadLeaderAttendance = async (memberIds) => {
       : "-";
 
   // Returns today's date in YYYY-MM-DD format (Yangon time)
-/*   const getTodayDateYangon = () => {
-    const now = new Date(
-      new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
-    );
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-  }; */
+
   const getTodayDateYangon = () => {
   const now = new Date();
 
@@ -1210,7 +1356,8 @@ useEffect(() => {
 
   (async () => {
     await loadAllUsers();
-    await loadAllAttendance();
+   /*  await loadAllAttendance(); */
+   await loadAllAttendance(attendanceMonth);
   })();
 }, [user, isAdmin, activeSidebar,attendanceMonth]);
 
@@ -1219,10 +1366,11 @@ useEffect(() => {
 
   (async () => {
     await loadAllUsers();
-    await loadAllAttendance();
-    await loadAllLeaves();
+    await loadOverviewAttendance(overviewMonth);
+    await loadOverviewLeaves(overviewMonth);
   })();
-}, [user, isAdmin, activeSidebar]);
+}, [user, isAdmin, activeSidebar, overviewMonth]);
+
 
 /* useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-leave") return;
@@ -1250,15 +1398,6 @@ useEffect(() => {
   showApprovedLeave,
   showRejectedLeave,
 ]);
-
-/* useEffect(() => {
-  if (!user || !isAdmin || activeSidebar !== "admin-ot") return;
-
-  (async () => {
-    await loadAllUsers();
-    await loadAllOvertime();
-  })();
-}, [user, isAdmin, activeSidebar]); */
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-ot") return;
@@ -1292,9 +1431,10 @@ useEffect(() => {
 
   (async () => {
     await loadAllUsers();
-    await loadAllAttendance();
+   /*  await loadAllAttendance(); */
+    await loadAllAttendance(attendanceMonth);
   })();
-}, [user, isAdmin, activeSidebar]);
+}, [user, isAdmin, activeSidebar,attendanceMonth]);
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-leave-balance") return;
@@ -1653,7 +1793,7 @@ const deletePayrollSummary = async (id) => {
   /* ---------------- data loaders ---------------- */
   
   // Load all employees
-const loadEmployees = async () => {
+/* const loadEmployees = async () => {
   try {
     if (!auth.currentUser) return;
 
@@ -1669,6 +1809,42 @@ const loadEmployees = async () => {
       .filter((u) => (u.employmentStatus || "active") !== "inactive");
 
     setEmployees(list);
+  } catch (err) {
+    console.error("loadEmployees error:", err);
+  }
+}; */
+
+const loadEmployees = async () => {
+  try {
+    // ---------------- LOAD CACHE FIRST ----------------
+    const cached = loadCache(CACHE_KEYS.employees, []);
+
+    if (cached.length > 0) {
+      setEmployees(cached);
+    }
+
+    // ---------------- FIREBASE ----------------
+    const q = query(
+      collection(db, "users"),
+      orderBy("eid", "asc")
+    );
+
+    const snap = await getDocs(q);
+
+    const list = snap.docs
+      .map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }))
+      .filter(
+        (u) =>
+          (u.employmentStatus || "active") !== "inactive"
+      );
+
+    setEmployees(list);
+
+    // ---------------- SAVE CACHE ----------------
+    saveCache(CACHE_KEYS.employees, list);
   } catch (err) {
     console.error("loadEmployees error:", err);
   }
@@ -1720,7 +1896,7 @@ const loadEmployees = async () => {
 };
 
   //12/18
-  const loadAllUsers = async () => {
+  /*   const loadAllUsers = async () => {
     const snap = await getDocs(collection(db, "users"));
     const map = {};
     snap.forEach((docSnap) => {
@@ -1736,22 +1912,117 @@ const loadEmployees = async () => {
       };
     });
     setUsersMap(map);
-  };
+  }; */
 
-  const loadAllAttendance = async () => {
+  const loadAllUsers = async () => {
+  // ---------------- LOAD CACHE FIRST ----------------
+  const cached = loadCache(CACHE_KEYS.usersMap, null);
+
+  if (cached) {
+    setUsersMap(cached);
+  }
+
+  // ---------------- FIREBASE ----------------
+  const snap = await getDocs(collection(db, "users"));
+
+  const map = {};
+
+  snap.forEach((docSnap) => {
+    const d = docSnap.data();
+
+    const key = d.authUid || docSnap.id;
+
+    map[key] = {
+      id: key,
+      ...d,
+
+      jobAllowance: Number(d.JobTitleAllowance || 0),
+      directorAllowance: Number(d.DirectorAllowance || 0),
+      languageAllowance: Number(d.LanguageAllowance || 0),
+    };
+  });
+
+  setUsersMap(map);
+
+  // ---------------- SAVE CACHE ----------------
+  saveCache(CACHE_KEYS.usersMap, map);
+};
+
+/*   const loadAllAttendance = async () => {
   const snap = await getDocs(collection(db, "attendance"));
   const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   list.sort((a, b) => new Date(b.date) - new Date(a.date));
   setAllAttendance(list);
+  }; */
+
+  const loadAllAttendance = async (month = attendanceMonth) => {
+    try {
+      const { start, endExclusive } = ExportmonthRange(month);
+
+      const q = query(
+        collection(db, "attendance"),
+        where("date", ">=", start),
+        where("date", "<", endExclusive)
+      );
+
+      const snap = await getDocs(q);
+
+      const list = snap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+
+      list.sort((a, b) => new Date(b.date) - new Date(a.date));
+      setAllAttendance(list);
+    } catch (err) {
+      console.error("loadAllAttendance error:", err);
+      notify("❌ Attendance cannot load: " + err.message);
+    }
+  };
+
+  const loadOverviewAttendance = async (month = overviewMonth) => {
+  const { start, endExclusive } = ExportmonthRange(month);
+
+  const q = query(
+    collection(db, "attendance"),
+    where("date", ">=", start),
+    where("date", "<", endExclusive)
+  );
+
+  const snap = await getDocs(q);
+
+  const list = snap.docs.map((d) => ({
+    id: d.id,
+    ...d.data(),
+  }));
+
+  setOverviewAttendance(list);
 };
 
-/*  const loadAllLeaves = async () => {
-    const snap = await getDocs(collection(db, "leaves"));
-    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    list.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
-    setAllLeaves(list);
-  };
- */
+const loadOverviewLeaves = async (month = overviewMonth) => {
+  const { start, endExclusive } = ExportmonthRange(month);
+
+  const q = query(
+    collection(db, "leaves"),
+    where("startDate", "<", endExclusive)
+  );
+
+  const snap = await getDocs(q);
+
+  const list = snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((l) => {
+      const s = l.startDate || "";
+      const e = l.endDate || "";
+
+      if (!s || !e) return false;
+
+      // overlaps selected month
+      return e >= start;
+    });
+
+  setOverviewLeaves(list);
+};
 
   const loadAllLeaves = async () => {
   const statuses = ["pending", "leader_approved"];
@@ -1772,13 +2043,6 @@ const loadEmployees = async () => {
 
   setAllLeaves(list);
 };
-
-/*   const loadAllOvertime = async () => {
-    const snap = await getDocs(collection(db, "overtimeRequests"));
-    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    list.sort((a, b) => new Date(b.date) - new Date(a.date)); // ✅ newest first
-    setAllOvertime(list);
-  }; */
 
   const loadAllOvertime = async () => {
   const statuses = ["pending"];
@@ -1819,21 +2083,6 @@ const [holidayMonth, setHolidayMonth] = useState(() => {
 });
 const [holidayDate, setHolidayDate] = useState(""); // "YYYY-MM-DD"
 const [holidayName, setHolidayName] = useState("");
-
-
-// Attendance Overview controls
-const [overviewLeaveUserId, setOverviewLeaveUserId] = useState("");
-const [overviewLeaveStart, setOverviewLeaveStart] = useState("");
-const [overviewLeaveEnd, setOverviewLeaveEnd] = useState("");
-const [overviewLeaveType, setOverviewLeaveType] = useState("Full Day");
-const [overviewLeaveName, setOverviewLeaveName] = useState("Casual Leave");
-const [overviewLeaveReason, setOverviewLeaveReason] = useState("");
-
-const [overviewMonth, setOverviewMonth] = useState(() => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-});
-const [overviewUserId, setOverviewUserId] = useState("");
 
 const adminCreateLeaveForStaff = async () => {
   try {
@@ -2037,9 +2286,10 @@ const holidayMap = React.useMemo(() => {
 
 const findAttendanceByUserAndDate = (uid, dateStr) => {
   if (!uid || !dateStr) return null;
-  return (allAttendance || []).find((a) => a.userId === uid && a.date === dateStr) || null;
+  return (overviewAttendance || []).find(
+    (a) => a.userId === uid && a.date === dateStr
+  ) || null;
 };
-
   // Calculate duration in hours and minutes
   const calcPoDuration = (from, to) => {
   const [fh, fm] = from.split(":").map(Number);
@@ -2288,7 +2538,8 @@ const checkLocationRange = async () => {
     notify(successMsg);
 
     loadAttendance(user.uid);
-   /*  if (isAdmin) loadAllAttendance(); */
+   if (isAdmin) /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
 
   } catch (err) {
     console.error(err);
@@ -2364,7 +2615,8 @@ const clockOut = async () => {
     notify(successMsg);
 
     loadAttendance(user.uid);
-    if (isAdmin) loadAllAttendance();
+    if (isAdmin) /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
 
   } catch (err) {
     console.error(err);
@@ -2467,7 +2719,8 @@ const clockOut = async () => {
 
     notify("✅ Attendance saved");
     setCreatingAttendance(false);
-    loadAllAttendance();
+     /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
   } catch (err) {
     console.error(err);
     notify("❌ Cannot save attendance: " + err.message);
@@ -2478,31 +2731,6 @@ const clockOut = async () => {
   const getEid = (uid) => getEmp(uid)?.eid || "";
   const getEmpName = (uid) => getEmp(uid)?.name || displayUser(uid) || "";
   const getEmpEmail = (uid) => getEmp(uid)?.email || "";
-
-    /* const filteredAttendance = (allAttendance || [])
-.filter((a) => {
-    if (!attendanceMonth) return true;
-    return (a.date || "").startsWith(attendanceMonth);
-  })
-  .filter((a) => {
-    const q = attendanceSearch.trim().toLowerCase();
-    if (!q) return true;
-
-    const uid = a.userId;
-    const hay = [
-      getEid(uid),
-      getEmpName(uid),
-      getEmpEmail(uid),
-      a.date || "",
-    ]
-      .join(" ")
-      .toLowerCase();
-
-    return hay.includes(q);
-  })
-
-  .sort((x, y) => (y.date || "").localeCompare(x.date || ""));
- */
 
   const filteredAttendance = (allAttendance || [])
   .filter((a) => shouldShowRecordForUser(a.userId, a.date))
@@ -2592,7 +2820,8 @@ const adminUpdateAttendanceTime = async () => {
     setEditClockIn("");
     setEditClockOut("");
 
-    loadAllAttendance();
+     /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
   } catch (err) {
     console.error(err);
     notify("❌ Cannot update attendance: " + err.message);
@@ -2701,7 +2930,8 @@ const adminBulkCreateMonthAttendance = async () => {
 
     notify(`✅ Bulk done. Created/updated: ${createdCount}, Skipped: ${skippedCount}`);
     setCreatingAttendance(false);
-    loadAllAttendance();
+     /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
   } catch (err) {
     console.error(err);
     notify("❌ Cannot bulk add: " + err.message);
@@ -2724,7 +2954,8 @@ const adminDeleteAttendance = async () => {
 
     notify("🗑 Attendance deleted");
     setEditingAttendance(null);
-    loadAllAttendance();
+     /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
   } catch (err) {
     console.error(err);
     notify("❌ Delete failed: " + err.message);
@@ -2772,7 +3003,8 @@ const adminDeleteMonthAttendance = async () => {
     await batch.commit();
 
     notify(`🗑 Deleted ${docsToDelete.length} attendance records`);
-    loadAllAttendance();
+     /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
   } catch (err) {
     console.error(err);
     notify("❌ Delete failed: " + err.message);
@@ -2814,7 +3046,7 @@ const getLeaveDayAbbr = (leave) => {
 };
 
 
-const getLeaveAbbreviationForDate = (userId, date) => {
+/* const getLeaveAbbreviationForDate = (userId, date) => {
   const leave = allLeaves.find((l) => {
     if (l.userId !== userId) return false;
     if (l.status !== "approved") return false;
@@ -2829,6 +3061,30 @@ const getLeaveAbbreviationForDate = (userId, date) => {
   if (!leave) return "";
 
   const typeAbbr = LEAVE_TYPE_ABBR[(leave.leaveName || "").toLowerCase().trim()] || "";
+  const dayAbbr = getLeaveDayAbbr(leave);
+
+  return `${dayAbbr}/${typeAbbr}`;
+}; */
+
+const getLeaveAbbreviationForDate = (userId, date) => {
+  const leave = overviewLeaves.find((l) => {
+    if (l.userId !== userId) return false;
+
+    const status = String(l.status || "").toLowerCase();
+
+    // show only final approved leave
+    if (status !== "approved") return false;
+
+    return date >= l.startDate && date <= l.endDate;
+  });
+
+  if (!leave) return "";
+
+  const typeAbbr =
+    LEAVE_TYPE_ABBR[
+      String(leave.leaveName || "").toLowerCase().trim()
+    ] || "";
+
   const dayAbbr = getLeaveDayAbbr(leave);
 
   return `${dayAbbr}/${typeAbbr}`;
@@ -3803,20 +4059,7 @@ const calcLeaveUnits = (leave) => {
   return dayCount * multiplier;
 };
 
-/*   const deleteLeaveRequest = async (id) => {
-  try {
-    if (!window.confirm("Delete this leave request?")) return;
-
-    await deleteDoc(doc(db, "leaves", id));
-    notify("🗑 Leave request deleted");
-    loadAllLeaves(); // refresh admin list
-  } catch (err) {
-    console.error(err);
-    notify("❌ Delete failed: " + err.message);
-  }
-}; */
-
-   const leaderUpdateOvertimeStatus = async (otDocId, status, memberUserId) => {
+const leaderUpdateOvertimeStatus = async (otDocId, status, memberUserId) => {
     if (!leaderMembers.includes(memberUserId)) {
       return notify("🚫 You cannot approve non-member overtime.");
     }
@@ -4180,6 +4423,22 @@ useEffect(() => {
 
   // export excel end
 
+  //Pagination
+  const pagedAttendance = paginate(filteredAttendance, "attendance");
+  const pagedEmployees = paginate(filteredEmployees, "employees");
+  const pagedOT = paginate(filteredAllMemberOT, "admin-ot");
+  const pagedPO = paginate(filteredAllPoReports, "admin-po");
+  const pagedLeave = paginate(filteredAllMemberLeaves, "admin-leave");
+  const pagedLeaveBalance = paginate(filteredUserIdsForLeave, "leave-balance");
+  const pagedLocation  = paginate(filteredEmployeeslocation, "location");
+  const pagedGPS = paginate(filteredGpsSettingEmployees, "gps");
+  const paged_mem_att = paginate(filteredMemberAttendance, "mem-att");
+  const paged_mem_leave = paginate(filteredMemberLeaves, "mem-leave");
+  const paged_mem_ot = paginate(filteredMemberOT, "mem-ot");
+  const paged_month_summary = paginate(monthlySummaryByUser, "month-summary");
+  const paged_leave_summary = paginate(leaveSummaryUids, "leave-summary");
+  const pagedPayroll = paginate(allPayroll, "payroll");
+
   /* ---------------- summary / csv / clear ---------------- */
   const getMonthlySummary = () => {
     const sum = {};
@@ -4328,7 +4587,8 @@ useEffect(() => {
     setAllPayslips([]);
 
     // ✅ Reload admin lists again (optional)
-    loadAllAttendance();
+    /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
     loadAllLeaves();
     loadAllOvertime();
     loadAllPoReports();
@@ -4405,7 +4665,8 @@ useEffect(() => {
     notify(`✅ Deleted ${totalDeleted} records for ${month}`);
 
     // Reload admin data
-    loadAllAttendance();
+    /* loadAllAttendance(); */
+    loadAllAttendance(attendanceMonth);
     loadAllLeaves();
     loadAllOvertime();
     loadAllPoReports();
@@ -4448,6 +4709,35 @@ useEffect(() => {
   : s === "leader_approved" ? <span className="badge blue">Leader Approved</span>
   : <span className="badge yellow">Pending</span>;
 
+  const Pagination = ({ list, pageKey }) => {
+  const { page, totalPages } = paginate(list, pageKey);
+
+  if (list.length <= PAGE_SIZE) return null;
+
+  return (
+    <div className="pagination">
+      <button
+        className="btn small"
+        disabled={page <= 1}
+        onClick={() => setPage(pageKey, page - 1)}
+      >
+        Prev
+      </button>
+
+      <span>
+        Page {page} / {totalPages}
+      </span>
+
+      <button
+        className="btn small"
+        disabled={page >= totalPages}
+        onClick={() => setPage(pageKey, page + 1)}
+      >
+        Next
+      </button>
+    </div>
+  );
+};
 
   /* ---------------- render ---------------- */
   if (authLoading) {
@@ -5679,7 +5969,7 @@ useEffect(() => {
       <thead><tr><th>User</th><th>Date</th><th>Clock In</th><th>Clock Out</th><th>In Loc</th><th>Out Loc</th><th>Action</th></tr></thead>
       <tbody>
         {filteredMemberAttendance.length === 0 ? <tr><td colSpan="7" style={{ textAlign: "center", padding: "20px" }}>No attendance records found for this month.</td></tr> :
-          filteredMemberAttendance.map((at, i) => (
+          paged_mem_att.rows.map((at, i) => (
             <tr key={at.id}>
               <td>{displayUser(at.userId)}</td>
               <td>{at.date}</td>
@@ -5704,6 +5994,11 @@ useEffect(() => {
         }
       </tbody>
     </table>
+
+    <Pagination
+      list={filteredMemberAttendance}
+      pageKey="mem-att"
+    />
 
     {editingLeaderAttendance && (
   <div className="modal-overlay" onClick={() => setEditingLeaderAttendance(null)}>
@@ -5795,7 +6090,7 @@ useEffect(() => {
         {filteredMemberLeaves.length === 0 ? (
           <tr><td colSpan="9" style={{ textAlign: "center", padding: "20px" }}>No leave requests found for this month.</td></tr>
         ) : (
-          filteredMemberLeaves.map((lv) => (
+           paged_mem_leave.rows.map((lv) => (
             <tr key={lv.id}>
               <td>{displayUser(lv.userId)}</td>
               <td>{lv.createdAt?.split("T")[0]}</td>
@@ -5822,6 +6117,12 @@ useEffect(() => {
         )}
       </tbody>
     </table>
+
+    <Pagination
+      list={filteredMemberLeaves}
+      pageKey="mem-leave"
+    />
+
      </div>
   </section>
 )}
@@ -5857,7 +6158,7 @@ useEffect(() => {
         {filteredMemberOT.length === 0 ? (
           <tr><td colSpan="7" style={{ textAlign: "center", padding: "20px" }}>No overtime requests found for this month.</td></tr>
         ) : (
-          filteredMemberOT.map((ot) => (
+          paged_mem_att.rows.map((ot) => (
             <tr key={ot.id}>
               <td>{displayUser(ot.userId)}</td>
               <td>{ot.date}</td>
@@ -5882,6 +6183,10 @@ useEffect(() => {
         )}
       </tbody>
     </table>
+     <Pagination
+      list={filteredMemberOT}
+      pageKey="mem-ot"
+    />
      </div>
   </section>
 )}
@@ -5939,7 +6244,7 @@ useEffect(() => {
           {filteredEmployees.length === 0 ? (
             <tr><td colSpan="8">No employees found</td></tr>
           ) : (
-            filteredEmployees.map((e) => (
+            pagedEmployees.rows.map((e) => (
               <tr
                 key={e.id}
                 onClick={() => openEmployeeForEdit(e)}
@@ -5965,6 +6270,10 @@ useEffect(() => {
           )}
         </tbody>
       </table>
+      <Pagination
+        list={filteredEmployees}
+        pageKey="employees"
+      />
     </div>
 
       {/* Form */}
@@ -6350,7 +6659,7 @@ useEffect(() => {
       </thead>
 
       <tbody>
-       {filteredEmployeeslocation.map((emp) => (
+       {pagedLocation.rows.map((emp) => (
 
           <React.Fragment key={emp.id}>
             {/* MAIN ROW */}
@@ -6391,6 +6700,11 @@ useEffect(() => {
             )) }
         </tbody>
     </table>
+
+     <Pagination
+      list={filteredEmployeeslocation}
+      pageKey="location"
+    />
 
      {showLocationModal && locationEditEmp && (
           <div
@@ -6517,7 +6831,7 @@ useEffect(() => {
         {filteredGpsSettingEmployees.length === 0 ? (
           <tr><td colSpan="7">No staff found</td></tr>
         ) : (
-          filteredGpsSettingEmployees.map((emp) => {
+          pagedGPS.rows.map((emp) => {
             const currentMode = getAttendanceLocationModeValue(emp);
             return (
               <tr key={emp.id}>
@@ -6558,6 +6872,10 @@ useEffect(() => {
         )}
       </tbody>
     </table>
+    <Pagination
+      list={filteredGpsSettingEmployees}
+      pageKey="gps"
+    />
   </section>
 )}
 
@@ -6581,7 +6899,6 @@ useEffect(() => {
             placeholder="Holiday name"
             value={holidayName}
             onChange={(e) => setHolidayName(e.target.value)}
-            style={{ minWidth: 240 }}
           />
           </div>
          <button className="btn blue" onClick={adminAddOrUpdateHoliday} style={{ marginTop: 20 }}>💾 Save Holiday</button>
@@ -6868,7 +7185,7 @@ useEffect(() => {
 
               <tbody>
                 {allAttendance.length===0 ? <tr><td colSpan="7">No attendance</td></tr> :
-                  filteredAttendance.map((a) => (
+                  pagedAttendance.rows.map((a) => (
                     <tr key={a.id} style={{
                       color: isResignedHistoricalRow(a.userId, a.date) ? "#dc2626" : "inherit",
                       fontWeight: isResignedHistoricalRow(a.userId, a.date) ? 700 : 400,
@@ -6896,6 +7213,10 @@ useEffect(() => {
                 }
               </tbody>
             </table>
+            <Pagination
+              list={filteredAttendance}
+              pageKey="attendance"
+            />
             </section>
         )}
 
@@ -7006,7 +7327,7 @@ useEffect(() => {
         )}
 
          {isAdmin && activeSidebar==="admin-att-summary" && (
-            <section className="card" style={{ marginTop: 18 }}>
+            <section className="card">
               <h2>Monthly Attendance Summary </h2>
 
               <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
@@ -7031,7 +7352,7 @@ useEffect(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  {monthlySummaryByUser.map((r) => (
+                  {paged_month_summary.rows.map((r) => (
                     <tr key={r.uid}>
                       <td style={{ fontWeight: 700 }}>{r.eid || "-"}</td>
                       <td>{r.name}</td>
@@ -7046,6 +7367,11 @@ useEffect(() => {
                   ))}
                 </tbody>
               </table>
+
+              <Pagination
+              list={monthlySummaryByUser}
+              pageKey="month-summary"
+            />
             </section>
 
           )}
@@ -7110,7 +7436,7 @@ useEffect(() => {
                 {filteredAllPoReports.length === 0 ? (
                   <tr><td colSpan="5">No P/O records found.</td></tr>
                 ) : (
-                  filteredAllPoReports.map((p) => (
+                  pagedPO.rows.map((p) => (
                   <tr key={p.id} style={{
                     color: isResignedHistoricalRow(p.userId, p.date) ? "#dc2626" : "inherit",
                     fontWeight: isResignedHistoricalRow(p.userId, p.date) ? 700 : 400,
@@ -7156,7 +7482,12 @@ useEffect(() => {
                 )}
               </tbody>
             </table>
-                      </section>
+
+            <Pagination
+            list={filteredAllPoReports}
+            pageKey="admin-po"
+          />
+          </section>
         )}
 
 
@@ -7240,7 +7571,7 @@ useEffect(() => {
 
               <tbody>
                 {filteredAllMemberLeaves.length===0 ? <tr><td colSpan="10">No leave requests</td></tr> :
-                  filteredAllMemberLeaves.map((lv) => (
+                  pagedLeave.rows.map((lv) => (
                     
                     <tr key={lv.id} style={{
                     color: isResignedHistoricalRow(lv.userId, lv.date) ? "#dc2626" : "inherit",
@@ -7292,6 +7623,11 @@ useEffect(() => {
                 }
               </tbody>
             </table>
+
+            <Pagination
+              list={filteredAllMemberLeaves}
+              pageKey="admin-leave"
+            />
 
             {editingLeave && (
               <div className="modal-overlay" onClick={() => setEditingLeave(null)}>
@@ -7362,18 +7698,19 @@ useEffect(() => {
 
         <div style={{ overflowX: "auto" }}>
           <table className="data-table" style={{ minWidth: 900 }}>
-            <thead>
-              <tr>
-                <th style={{ width: 120 }}>Employee ID</th>
-                <th style={{ width: 260 }}>Name</th>
-                <th>Leave Balance</th>
-                <th style={{ width: 120 }}>Action</th>
-              </tr>
-            </thead>
+              <thead>
+                <tr>
+                  <th style={{ width: 120 }}>Employee ID</th>
+                  <th style={{ width: 260 }}>Name</th>
+                  <th>Leave Balance</th>
+                  <th style={{ width: 120 }}>Action</th>
+                </tr>
+              </thead>
 
             <tbody>
-              {filteredUserIdsForLeave.map((uid) => {
-                // keep your setValue logic (same as your current code)
+              {pagedLeaveBalance.rows.map((uid) => {
+                const isOpen = !!openLeaveBalanceRows[uid];
+
                 const setValue = (type, field, value) => {
                   setLeaveBalances((prev) => ({
                     ...prev,
@@ -7390,107 +7727,158 @@ useEffect(() => {
                   }));
                 };
 
+                const renderLeaveCard = (t, fullWidth = false) => {
+                  const base = getBal(uid, t.key, "base");
+                  const carry = t.hasCarry ? getBal(uid, t.key, "carry") : 0;
+                  const allowance = Number(base) + Number(carry);
+
+                  const manualTaken = getBal(uid, t.key, "taken");
+                  const computedTaken = getLeaveTaken(uid, t.key);
+
+                  const taken =
+                    manualTaken !== "" &&
+                    manualTaken !== null &&
+                    manualTaken !== undefined
+                      ? Number(manualTaken)
+                      : Number(computedTaken);
+
+                  const balance = allowance - taken;
+
+                  return (
+                    <div
+                      key={t.key}
+                      style={{
+                        border: "1px solid #e9eef5",
+                        borderRadius: 10,
+                        padding: 12,
+                        background: "#fff",
+                        marginBottom: fullWidth ? 12 : 0,
+                        width: 350,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 16,
+                          color: "#0f172a",
+                          marginBottom: 10,
+                        }}
+                      >
+                        {t.label}
+                      </div>
+
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: t.hasCarry
+                            ? "repeat(4, 1fr)"
+                            : "repeat(3, 1fr)",
+                          gap: 10,
+                          alignItems: "center",
+                        }}
+                      >
+                        <div style={{ fontSize: 12, color: "#666" }}>Allowance</div>
+                        {t.hasCarry && (
+                          <div style={{ fontSize: 12, color: "#666" }}>Carry</div>
+                        )}
+                        <div style={{ fontSize: 12, color: "#666" }}>Taken</div>
+                        <div style={{ fontSize: 12, color: "#666" }}>Balance</div>
+
+                        <input
+                          type="number"
+                          value={base}
+                          onChange={(e) => setValue(t.key, "base", e.target.value)}
+                          placeholder="Base"
+                          style={{ width: 55 }}
+                        />
+
+                        {t.hasCarry && (
+                          <input
+                            type="number"
+                            value={carry}
+                            onChange={(e) => setValue(t.key, "carry", e.target.value)}
+                            placeholder="Carry"
+                            style={{ width: 55 }}
+                          />
+                        )}
+
+                        <input
+                          type="number"
+                          value={taken}
+                          onChange={(e) => setValue(t.key, "taken", e.target.value)}
+                          placeholder="Taken"
+                          style={{ width: 55 }}
+                        />
+
+                        <input
+                          type="number"
+                          value={balance}
+                          readOnly
+                          style={{
+                            background: "#f7f8fa",
+                            color: balance < 0 ? "red" : "#111",
+                            fontWeight: 700,
+                            width: 55,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                };
+
                 return (
                   <tr key={uid}>
-                    <td style={{ fontWeight: 700 }}>
-                      {usersMap[uid]?.eid || "-"}
-                    </td>
+                    <td style={{ fontWeight: 700 }}>{usersMap[uid]?.eid || "-"}</td>
 
                     <td>
-                      <div style={{ fontWeight: 700 }}>{displayUser(uid)}</div>
-                      <div style={{ fontSize: 12, color: "#666" }}>
-                        {usersMap[uid]?.email || ""}
-                      </div>
-                    </td>
+                      
 
-                    {/* Leave list (your sketch) */}
-                    <td>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                          {LEAVE_TYPES.map((t) => {
-                          const base = getBal(uid, t.key, "base");
-                          const carry = t.hasCarry ? getBal(uid, t.key, "carry") : 0;
-                          const allowance = Number(base) + Number(carry);
-
-                          // manual taken stored in leaveBalances
-                          const manualTaken = getBal(uid, t.key, "taken");
-
-                          // if manual taken is empty/null, fallback to computed taken from leave requests
-                          const computedTaken = getLeaveTaken(uid, t.key);
-                          const taken = (manualTaken !== "" && manualTaken !== null && manualTaken !== undefined)
-                            ? Number(manualTaken)
-                            : Number(computedTaken);
-
-                          const balance = allowance - taken;
-
-
-                          return (
-                            <div
-                              key={t.key}
-                              style={{
-                                border: "1px solid #e9eef5",
-                                borderRadius: 10,
-                                padding: 12,
-                                background: "#fff",
-                              }}
-                            >
-                              <div style={{ width: 670, display: "flex", alignItems: "center", gap: 12 }}>
-                                <div style={{ width: 100, fontWeight: 700 }}>{t.label}</div>
-
-                                {/* Header row inside */}
-                                <div style={{ display: "grid", gridTemplateColumns: t.hasCarry ? "120px 120px 120px 120px" : "120px 120px 120px", gap: 10, alignItems: "center" }}>
-                                  <div style={{ fontSize: 12, color: "#666" }}>Allowance</div>
-                                  {t.hasCarry && <div style={{ fontSize: 12, color: "#666" }}>Carry</div>}
-                                  <div style={{ fontSize: 12, color: "#666" }}>Taken</div>
-                                  <div style={{ fontSize: 12, color: "#666" }}>Balance</div>
-
-                                  {/* Inputs row */}
-                                  <input
-                                    type="number"
-                                    value={base}
-                                    onChange={(e) => setValue(t.key, "base", e.target.value)}
-                                   
-                                    placeholder="Base"
-                                  />
-
-                                  {t.hasCarry && (
-                                    <input
-                                      type="number"
-                                      value={carry}
-                                      onChange={(e) => setValue(t.key, "carry", e.target.value)}
-                                     
-                                      placeholder="Carry"
-                                    />
-                                  )}
-
-                                  {/* Taken: usually computed (read-only). If you want manual, change to input + store. */}
-                                 <input
-                                  type="number"
-                                  value={taken}
-                                  onChange={(e) => setValue(t.key, "taken", e.target.value)}
-                                  placeholder="Taken"
-                                />
-
-
-                                  <input
-                                    type="number"
-                                    value={balance}
-                                    readOnly
-                                    style={{
-                                      background: "#f7f8fa",
-                                      color: balance < 0 ? "red" : "#111",
-                                      fontWeight: 700,
-                                    }}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
+                      <div style={{ display: "inline-block", verticalAlign: "middle" }}>
+                        <div style={{ fontWeight: 700 }}>{displayUser(uid)}</div>
+                        <div style={{ fontSize: 12, color: "#666" }}>
+                          {usersMap[uid]?.email || ""}
+                        </div>
                       </div>
                     </td>
 
                     <td>
-                      <button className="btn small blue" onClick={() => saveLeaveBalance(uid)}>
+                      {LEAVE_TYPES.filter((t) => t.hasCarry).map((t) =>
+                        renderLeaveCard(t, true)
+                      )}
+
+                      {isOpen && (
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(2, 1fr)",
+                            gap: 12,
+                            marginBottom:12
+                          }}
+                        >
+                          {LEAVE_TYPES.filter((t) => !t.hasCarry).map((t) =>
+                            renderLeaveCard(t)
+                          )}
+                        </div>
+                      )}
+                      <button
+                        className="btn small"
+                        style={{padding: 10,backgroundColor:"#333",color:"#fff" }}
+                        onClick={() =>
+                          setOpenLeaveBalanceRows((prev) => ({
+                            ...prev,
+                            [uid]: !prev[uid],
+                          }))
+                        }
+                      >
+                        {isOpen ? "Show Less" : "Show More"}
+                      </button>
+                    </td>
+
+                    <td>
+                      <button
+                        className="btn small blue leave"
+                        onClick={() => saveLeaveBalance(uid)}
+                      >
                         💾 Save
                       </button>
                     </td>
@@ -7499,6 +7887,11 @@ useEffect(() => {
               })}
             </tbody>
           </table>
+
+          <Pagination
+            list={filteredUserIdsForLeave}
+            pageKey="leave-balance"
+        />
         </div>
       </section>
 
@@ -7533,7 +7926,7 @@ useEffect(() => {
                 </tr>
               </thead>
               <tbody>
-                {leaveSummaryUids.map((uid) => {
+                {paged_leave_summary.rows.map((uid) => {
                   const leaveTypes = {
                     "Casual Leave": 6,
                     "Annual Leave": 10,
@@ -7592,6 +7985,12 @@ useEffect(() => {
               </tbody>
 
             </table>
+
+             <Pagination
+              list={leaveSummaryUids}
+              pageKey="leave-summary"
+            />
+
           </section>
         )}
 
@@ -7640,7 +8039,7 @@ useEffect(() => {
               <thead><tr><th>User</th><th>Date</th><th>Time</th><th>Total</th><th>Reason</th><th>Approver</th><th>Status</th><th>Action</th></tr></thead>
               <tbody>
                 {filteredAllMemberOT.length===0 ? <tr><td colSpan="8">No OT requests</td></tr> :
-                  filteredAllMemberOT.map((ot) => (
+                  pagedOT.rows.map((ot) => (
                     <tr key={ot.id} style={{
                       color: isResignedHistoricalRow(ot.userId, ot.date) ? "#dc2626" : "inherit",
                       fontWeight: isResignedHistoricalRow(ot.userId, ot.date) ? 700 : 400,
@@ -7673,6 +8072,11 @@ useEffect(() => {
                 }
               </tbody>
             </table>
+
+            <Pagination
+              list={filteredAllMemberOT}
+              pageKey="admin-ot"
+            />
           </section>
         )}
 
@@ -7730,7 +8134,7 @@ useEffect(() => {
         <td colSpan="9">No payroll records found.</td>
         </tr>
         ) : (
-        allPayroll.map((p) => {
+        pagedPayroll.rows.map((p) => {
           const fullName = p.name || "";
 
           const match = fullName.match(/^([^\u3040-\u30FF]*)([\u3040-\u30FF].*)?$/);
@@ -7798,6 +8202,11 @@ useEffect(() => {
         )}
         </tbody>
       </table>
+
+      <Pagination
+      list={allPayroll}
+      pageKey="payroll"
+    />
     </div>
 
     {selectedPayroll && (
