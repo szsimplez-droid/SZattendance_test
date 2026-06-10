@@ -96,7 +96,26 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState("");
   const [roles, setRoles] = useState([]);
+ 
 
+  //for super admin start
+  const [setupCompanyId, setSetupCompanyId] = useState("");
+  const [setupCompanyName, setSetupCompanyName] = useState("");
+  const [setupAdminName, setSetupAdminName] = useState("");
+  const [setupAdminEmail, setSetupAdminEmail] = useState("");
+  const [setupAdminPassword, setSetupAdminPassword] = useState("");
+  const [companyId, setCompanyId] = useState("");
+  const [companies, setCompanies] = useState([]);
+  const [editingCompanyId, setEditingCompanyId] = useState(null);
+
+  const [adminCompanyId, setAdminCompanyId] = useState("");
+  const [adminCompanyName, setAdminCompanyName] = useState("");
+  const [newCompanyAdminName, setNewCompanyAdminName] = useState("");
+  const [newCompanyAdminEmail, setNewCompanyAdminEmail] = useState("");
+  const [newCompanyAdminPassword, setNewCompanyAdminPassword] = useState("");
+  const [companyAdminsMap, setCompanyAdminsMap] = useState({});
+  //end
+  
   const [clockLoading, setClockLoading] = useState(false);
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const [myCalendarMonth, setMyCalendarMonth] = useState(() => {
@@ -123,6 +142,7 @@ export default function App() {
   const [showLeaderDropdown, setShowLeaderDropdown] = useState(false);
 
   const [showEmpModal, setShowEmpModal] = useState(false);
+
 
    // common UI
   const [message, setMessage] = useState("");
@@ -256,6 +276,8 @@ const [showRejectedOT, setShowRejectedOT] = useState(false);
   const leaders = employees.filter(
   (e) => (e.role === "leader") || (e.roles || []).includes("leader"));
 
+  const companyCacheKey = (key) => `${key}_${companyId || "no_company"}`;
+
   // open in new tab start
   const handleTabClick = (e, tab) => {
     if (
@@ -362,7 +384,7 @@ useEffect(() => {
         setName("");
         setMessage("");
         setAuthLoading(false);
-
+        
         clearCache(CACHE_KEYS.profile);
 
         return;
@@ -377,6 +399,7 @@ useEffect(() => {
         setRole(cached.role || "");
         setRoles(cached.roles || []);
         setName(cached.name || "");
+        setCompanyId(cached.companyId || "");
 
         if (cached.location) {
           setUserSavedLocation(cached.location);
@@ -401,24 +424,20 @@ useEffect(() => {
       setRole(data.role || "");
       setRoles(rolesArr);
       setName(data.name || "");
+      setCompanyId(data.companyId || "");
 
       if (data.location) {
         setUserSavedLocation(data.location);
       }
 
       // ---------------- SAVE CACHE ----------------
-     /*  saveCache(CACHE_KEYS.profile, {
-        uid,
-        role: data.role || "",
-        roles: rolesArr,
-        name: data.name || "",
-        location: data.location || null,
-      }); */
+     
       saveCache(CACHE_KEYS.profile, {
         uid,
         role: data.role || "",
         roles: rolesArr,
         name: data.name || "",
+        companyId: data.companyId || null,
         location: data.location || null,
         locations: data.locations || [],
         attendanceLocationMode: data.attendanceLocationMode || "required",
@@ -444,10 +463,11 @@ useEffect(() => {
 
 // notifications start
 useEffect(() => {
-  if (!user) return;
+  if (!user || !companyId) return;
 
   const q = query(
     collection(db, "notifications"),
+    where("companyId", "==", companyId),
     where("userId", "==", user.uid),
     orderBy("date", "desc")
   );
@@ -470,7 +490,7 @@ useEffect(() => {
   );
 
   return () => unsub();
-}, [user]);
+}, [user, companyId]);
 
 /* const markAllRead = async () => {
   const unread = notifications.filter((n) => !n.read);
@@ -744,17 +764,18 @@ const clearCache = (key) => {
       if (selectedEmpId) {
         // UPDATE existing
         await updateDoc(doc(db, "users", selectedEmpId), payload);
-        clearCache(CACHE_KEYS.employees);
-        clearCache(CACHE_KEYS.usersMap);
+        clearCache(companyCacheKey(CACHE_KEYS.employees));
+        clearCache(companyCacheKey(CACHE_KEYS.usersMap));
         notify("✅ Employee updated");
       } else {
         // CREATE new
         await addDoc(collection(db, "users"), {
+          companyId,
           ...payload,
           createdAt: new Date().toISOString(),
         });
-        clearCache(CACHE_KEYS.employees);
-        clearCache(CACHE_KEYS.usersMap);
+       clearCache(companyCacheKey(CACHE_KEYS.employees));
+      clearCache(companyCacheKey(CACHE_KEYS.usersMap));
         notify("✅ New employee created");
       }
 
@@ -849,89 +870,141 @@ const clearCache = (key) => {
   ),
 ];
 
+const isCreateMode = !selectedEmpId;
+
+const canSave =
+  !isCreateMode ||
+  (
+    loginEmail?.trim() &&
+    tempPassword?.trim() &&
+    employeeForm.employeeCode?.trim() &&
+    employeeForm.employeeName?.trim()
+  );
+
   const createEmployee = async () => {
+  let createdUser = null;
+
   try {
+    if (!companyId) {
+      return notify("Company ID not loaded. Please logout and login again.");
+    }
+
     if (!loginEmail || !tempPassword) {
       return notify("Login email and temporary password are required.");
     }
+
     if (!employeeForm.employeeCode || !employeeForm.employeeName) {
       return notify("Employee Code and Employee Name are required.");
     }
 
     const cred = await createUserWithEmailAndPassword(
       secondaryAuth,
-      loginEmail,
+      loginEmail.trim(),
       tempPassword
     );
 
+    createdUser = cred.user;
     const uid = cred.user.uid;
 
-    await setDoc(
-      doc(db, "users", uid),
-      {
-        ...employeeForm,
-        joinDate: employeeForm.doe || "",
-        doe: employeeForm.doe || "",
-        eid: employeeForm.employeeCode,
-        name: employeeForm.employeeName,
-        email: loginEmail,
-        role: employeeForm.role || "staff",
-        roles: employeeForm.roles || [employeeForm.role || "staff"],
-        createdAt: new Date().toISOString(),
-        createdBy: auth.currentUser?.uid || null,
-        authUid: uid,
-      },
-      { merge: true }
-    );
+    await setDoc(doc(db, "users", uid), {
+      companyId,
+      ...employeeForm,
+      employeeCode: employeeForm.employeeCode,
+      employeeName: employeeForm.employeeName,
+      joinDate: employeeForm.doe || "",
+      doe: employeeForm.doe || "",
+      eid: employeeForm.employeeCode,
+      name: employeeForm.employeeName,
+      email: loginEmail.trim(),
+      role: employeeForm.role || "staff",
+      roles: employeeForm.roles || [employeeForm.role || "staff"],
+      employmentStatus: employeeForm.employmentStatus || "active",
+      createdAt: new Date().toISOString(),
+      createdBy: auth.currentUser?.uid || null,
+      authUid: uid,
+    });
 
     await secondaryAuth.signOut();
 
-    notify("✅ Employee created (UID: " + uid + ")");
+    clearCache(companyCacheKey(CACHE_KEYS.employees));
+    clearCache(companyCacheKey(CACHE_KEYS.usersMap));
+
+    notify("✅ Employee created");
+
     setEmployeeForm(emptyEmployeeForm);
     setSelectedEmpId(null);
     setLoginEmail("");
     setTempPassword("");
     setShowTempPw(false);
+
     await loadEmployees(true);
     await loadAllUsers(true);
-    
   } catch (err) {
     console.error(err);
+
+    if (createdUser) {
+      try {
+        await createdUser.delete();
+      } catch (deleteErr) {
+        console.error("Rollback auth delete failed:", deleteErr);
+      }
+    }
+
+    if (err.code === "auth/email-already-in-use") {
+      notify("❌ This email already exists in Firebase Auth.");
+      return;
+    }
+
     notify("❌ Create failed: " + (err?.message || "unknown error"));
   }
-  };
+};
 
   const updateEmployee = async () => {
-    try {
-      if (!selectedEmpId) return;
+  try {
+    if (!selectedEmpId) return;
 
-      await updateDoc(doc(db, "users", selectedEmpId), {
-        ...employeeForm,
-        joinDate: employeeForm.doe || "",
-        doe: employeeForm.doe || "",
-        role: employeeForm.role || "staff",
-        roles: employeeForm.roles || [employeeForm.role || "staff"],
-        eid: employeeForm.employeeCode,
-        name: employeeForm.employeeName,
-        updatedAt: new Date().toISOString(),
-        updatedBy: auth.currentUser?.uid || null,
-        leaderId: employeeForm.leaderId || "",
-      });
-
-      if (selectedEmpId === user?.uid) {
-        clearCache(CACHE_KEYS.profile);
-      }
-
-      notify("✅ Employee updated");
-      setEmployeeForm(emptyEmployeeForm);
-      setSelectedEmpId(null);
-     await loadEmployees(true);
-     await loadAllUsers(true);
-    } catch (err) {
-      console.error(err);
-      notify("❌ Update failed: " + (err?.message || "unknown error"));
+    if (!companyId) {
+      return notify("Company ID not loaded. Please logout and login again.");
     }
-  };
+
+    await updateDoc(doc(db, "users", selectedEmpId), {
+      companyId,
+      ...employeeForm,
+      employeeCode: employeeForm.employeeCode,
+      employeeName: employeeForm.employeeName,
+      joinDate: employeeForm.doe || "",
+      doe: employeeForm.doe || "",
+      role: employeeForm.role || "staff",
+      roles: employeeForm.roles || [employeeForm.role || "staff"],
+      eid: employeeForm.employeeCode,
+      name: employeeForm.employeeName,
+      employmentStatus: employeeForm.employmentStatus || "active",
+      updatedAt: new Date().toISOString(),
+      updatedBy: auth.currentUser?.uid || null,
+      leaderId: employeeForm.leaderId || "",
+    });
+
+    if (selectedEmpId === user?.uid) {
+      clearCache(CACHE_KEYS.profile);
+    }
+
+    clearCache(companyCacheKey(CACHE_KEYS.employees));
+    clearCache(companyCacheKey(CACHE_KEYS.usersMap));
+
+    notify("✅ Employee updated");
+
+    setEmployeeForm(emptyEmployeeForm);
+    setSelectedEmpId(null);
+
+    await loadEmployees(true);
+    await loadAllUsers(true);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Update failed: " + (err?.message || "unknown error"));
+  }
+};
+
+
 
   const markEmployeeResigned = async () => {
     try {
@@ -1029,6 +1102,76 @@ const isResignedHistoricalRow = (uid, recordDate) => {
   return (recordDate || "") <= lastDay;
 };
 
+const createCompanyAndAdmin = async () => {
+  try {
+    if (!setupCompanyId || !setupCompanyName || !setupAdminEmail || !setupAdminPassword) {
+      return notify("Company ID, Company Name, Admin Email and Password are required.");
+    }
+
+    const cleanCompanyId = setupCompanyId.trim().toLowerCase().replace(/\s+/g, "_");
+
+    const cred = await createUserWithEmailAndPassword(
+      auth,
+      setupAdminEmail.trim(),
+      setupAdminPassword
+    );
+
+    const uid = cred.user.uid;
+
+    
+    await setDoc(doc(db, "companies", cleanCompanyId), {
+      companyId: cleanCompanyId,
+      companyName: setupCompanyName.trim(),
+      adminName: setupAdminName || "Admin",
+      adminEmail: setupAdminEmail.trim(),
+      status: "active",
+      createdAt: new Date().toISOString(),
+    });
+
+    await setDoc(doc(db, "users", uid), {
+    companyId: cleanCompanyId,
+    authUid: uid,
+    name: setupAdminName || "Admin",
+    employeeName: setupAdminName || "Admin",
+    email: setupAdminEmail.trim(),
+    role: "admin",
+    roles: ["admin", "leader"],
+    employmentStatus: "active",
+    createdAt: new Date().toISOString(),
+  });
+
+  setCompanies((prev) => [
+  ...prev,
+  {
+    id: cleanCompanyId,
+    companyId: cleanCompanyId,
+    companyName: setupCompanyName.trim(),
+    adminName: setupAdminName || "Admin",
+    adminEmail: setupAdminEmail.trim(),
+    status: "active",
+  },
+  ]);
+
+  await loadCompanies();
+
+    setUser(cred.user);
+    setCompanyId(cleanCompanyId);
+    setRole("superadmin");
+    setRoles(["superadmin"]);
+    setName(setupAdminName || "Admin");
+
+   notify("✅ Company and admin created.");
+
+    setSetupCompanyId("");
+    setSetupCompanyName("");
+    setSetupAdminName("");
+    setSetupAdminEmail("");
+    setSetupAdminPassword("");
+  } catch (err) {
+    console.error(err);
+    notify("❌ Company setup failed: " + err.message);
+  }
+};
 
 const createEmployeeSecondaryAuth = async () => {
   try {
@@ -1051,7 +1194,7 @@ const createEmployeeSecondaryAuth = async () => {
     // 2) Save Firestore profile to users/{uid} (fits your UID-based code)
     const payload = {
       ...employeeForm,
-
+      companyId,
       // keep compatibility with your existing UI (uses eid/name)
       eid: employeeForm.employeeCode,
       name: employeeForm.employeeName,
@@ -1239,8 +1382,8 @@ const importEmployeeInformationExcel = async (e) => {
 
         const payload = {
           employeeCode,
+          companyId,
           eid: employeeCode,
-
           employeeName,
           name: employeeName,
 
@@ -1292,8 +1435,8 @@ const importEmployeeInformationExcel = async (e) => {
       }
     }
 
-    clearCache(CACHE_KEYS.employees);
-    clearCache(CACHE_KEYS.usersMap);
+    clearCache(companyCacheKey(CACHE_KEYS.employees));
+clearCache(companyCacheKey(CACHE_KEYS.usersMap));
 
     await loadEmployees(true);
     await loadAllUsers(true);
@@ -1420,7 +1563,7 @@ const importEmployeeInformationExcel = async (e) => {
 const hasRole = (r) => roles.includes(r) || role === r; // supports old users too
 const isAdmin = hasRole("admin");
 const isLeader = hasRole("leader");
-
+const isSuperAdmin = hasRole("superadmin");
 const isHR = hasRole("hr");
 
 const ROLE_PRESETS = [
@@ -1469,6 +1612,169 @@ const getRolePresetKey = (emp) => {
   return "";
 };
 
+// start superadmin company management
+
+const loadCompanies = async () => {
+  try {
+    const snap = await getDocs(collection(db, "companies"));
+
+    const list = snap.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    list.sort((a, b) =>
+      String(a.companyName || "").localeCompare(String(b.companyName || ""))
+    );
+
+    setCompanies(list);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot load companies: " + err.message);
+  }
+};
+
+useEffect(() => {
+  if (!isSuperAdmin || activeSidebar !== "company-management") return;
+  loadCompanies();
+}, [isSuperAdmin, activeSidebar]);
+
+const loadCompanyAdmins = async () => {
+  const q = query(
+    collection(db, "users"),
+    where("role", "==", "admin")
+  );
+
+  const snap = await getDocs(q);
+  const map = {};
+
+  snap.docs.forEach((d) => {
+    const u = { id: d.id, ...d.data() };
+    if (!u.companyId) return;
+
+    if (!map[u.companyId]) map[u.companyId] = [];
+    map[u.companyId].push(u);
+  });
+
+  setCompanyAdminsMap(map);
+};
+
+useEffect(() => {
+  if (!isSuperAdmin || activeSidebar !== "company-management") return;
+
+  loadCompanies();
+  loadCompanyAdmins();
+}, [isSuperAdmin, activeSidebar]);
+
+const disableCompany = async (id) => {
+  if (!window.confirm("Disable this company?")) return;
+
+  await updateDoc(doc(db, "companies", id), {
+    status: "inactive",
+    updatedAt: new Date().toISOString(),
+  });
+
+  notify("🚫 Company disabled");
+  await loadCompanies();
+};
+
+const deleteCompany = async (id) => {
+  if (!window.confirm("Delete this company?")) return;
+
+  await deleteDoc(doc(db, "companies", id));
+
+  notify("🗑 Company deleted");
+  await loadCompanies();
+};
+
+const openAddCompanyAdmin = (c) => {
+  setAdminCompanyId(c.companyId || c.id);
+  setAdminCompanyName(c.companyName || "");
+  setNewCompanyAdminName("");
+  setNewCompanyAdminEmail("");
+  setNewCompanyAdminPassword("");
+};
+
+const addAdminToCompany = async () => {
+  let createdUser = null;
+
+  try {
+    if (!adminCompanyId || !newCompanyAdminEmail || !newCompanyAdminPassword) {
+      return notify("Company, admin email and password are required.");
+    }
+
+    const cred = await createUserWithEmailAndPassword(
+      secondaryAuth,
+      newCompanyAdminEmail.trim(),
+      newCompanyAdminPassword
+    );
+
+    createdUser = cred.user;
+    const uid = cred.user.uid;
+
+    await setDoc(doc(db, "users", uid), {
+      companyId: adminCompanyId,
+      authUid: uid,
+      name: newCompanyAdminName || "Admin",
+      employeeName: newCompanyAdminName || "Admin",
+      email: newCompanyAdminEmail.trim(),
+      role: "admin",
+      roles: ["admin", "leader"],
+      employmentStatus: "active",
+      createdAt: new Date().toISOString(),
+      createdBy: auth.currentUser?.uid || null,
+    });
+
+    await secondaryAuth.signOut();
+
+    notify("✅ Admin added to company.");
+
+    setCompanyAdminsMap((prev) => ({
+      ...prev,
+      [adminCompanyId]: [
+        ...(prev[adminCompanyId] || []),
+        {
+          id: uid,
+          companyId: adminCompanyId,
+          name: newCompanyAdminName || "Admin",
+          email: newCompanyAdminEmail.trim(),
+          role: "admin",
+          roles: ["admin", "leader"],
+        },
+      ],
+    }));
+
+    setAdminCompanyId("");
+    setAdminCompanyName("");
+    setNewCompanyAdminName("");
+    setNewCompanyAdminEmail("");
+    setNewCompanyAdminPassword("");
+
+    await loadCompanies();
+    await loadCompanyAdmins();
+
+  } catch (err) {
+    console.error(err);
+
+    if (createdUser) {
+      try {
+        await createdUser.delete();
+      } catch (deleteErr) {
+        console.error("Rollback auth delete failed:", deleteErr);
+      }
+    }
+
+    if (err.code === "auth/email-already-in-use") {
+      notify("❌ This email already exists in Firebase Auth. Delete it or use another email.");
+      return;
+    }
+
+    notify("❌ Add admin failed: " + err.message);
+  }
+};
+
+// end superadmin company management
+
 const saveEmployeeRoleAccess = async (emp) => {
   try {
     if (!emp.role || !Array.isArray(emp.roles)) {
@@ -1482,8 +1788,8 @@ const saveEmployeeRoleAccess = async (emp) => {
       updatedBy: auth.currentUser?.uid || null,
     });
 
-    clearCache(CACHE_KEYS.employees);
-    clearCache(CACHE_KEYS.usersMap);
+    clearCache(companyCacheKey(CACHE_KEYS.employees));
+clearCache(companyCacheKey(CACHE_KEYS.usersMap));
     if (emp.id === user?.uid) clearCache(CACHE_KEYS.profile);
 
     notify("✅ Role access saved");
@@ -1517,7 +1823,9 @@ const canAccessPayroll = isAdmin && !isHR;
 
 // load members under a leader (users where leaderId == leader uid)
 const loadLeaderMembers = async (leaderUid) => {
-  const q = query(collection(db, "users"), where("leaderId", "==", leaderUid));
+  if (!companyId) return;
+
+  const q = query(collection(db, "users"), where("companyId", "==", companyId),where("leaderId", "==", leaderUid));
   const snap = await getDocs(q);
   const ids = snap.docs.map((d) => d.id); // member UIDs
   setLeaderMembers(ids);
@@ -1525,13 +1833,15 @@ const loadLeaderMembers = async (leaderUid) => {
 };
 
 const loadLeaderLeaves = async (memberIds) => {
+  if (!companyId) return;
+
   if (!memberIds || memberIds.length === 0) {
     setLeaderLeaves([]);
     return;
   }
   let results = [];
   for (const batch of chunk(memberIds, 10)) {
-    const q = query(collection(db, "leaves"), where("userId", "in", batch));
+    const q = query(collection(db, "leaves"),where("companyId", "==", companyId), where("userId", "in", batch));
     const snap = await getDocs(q);
     results = results.concat(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   }
@@ -1547,13 +1857,15 @@ const loadLeaderLeaves = async (memberIds) => {
 };
 
 const loadLeaderOvertime = async (memberIds) => {
+  if (!companyId) return;
+
   if (!memberIds || memberIds.length === 0) {
     setLeaderOvertime([]);
     return;
   }
   let results = [];
   for (const batch of chunk(memberIds, 10)) {
-    const q = query(collection(db, "overtimeRequests"), where("userId", "in", batch));
+    const q = query(collection(db, "overtimeRequests"), where("companyId", "==", companyId),where("userId", "in", batch));
     const snap = await getDocs(q);
     results = results.concat(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   }
@@ -1568,26 +1880,12 @@ const loadLeaderOvertime = async (memberIds) => {
   setLeaderOvertime(results);
 };
 
-/* const loadLeaderAttendance = async (memberIds) => {
-  if (!memberIds || memberIds.length === 0) {
-    setLeaderAttendance([]);
-    return;
-  }
-  let results = [];
-  for (const batch of chunk(memberIds, 10)) {
-    const q = query(collection(db, "attendance"), where("userId", "in", batch));
-    const snap = await getDocs(q);
-    results = results.concat(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-  }
-
-  results.sort((a, b) => new Date(b.date) - new Date(a.date));
-  setLeaderAttendance(results);
-}; */
-
 const loadLeaderAttendance = async (
   memberIds,
   month = attendanceMonthFilter
 ) => {
+  if (!companyId) return;
+
   if (!memberIds || memberIds.length === 0) {
     setLeaderAttendance([]);
     return;
@@ -1600,6 +1898,7 @@ const loadLeaderAttendance = async (
   for (const batch of chunk(memberIds, 10)) {
     const q = query(
       collection(db, "attendance"),
+      where("companyId", "==", companyId),
       where("userId", "in", batch),
       where("date", ">=", start),
       where("date", "<", endExclusive)
@@ -1756,7 +2055,7 @@ const isEarlyOutByYangonTime = (isoString) => {
     }
 
     const data = ud.data();
-
+    setCompanyId(data.companyId || "");
     setRole(data.role || "");
     const rolesArr = data.roles || (data.role ? [data.role] : []);
     setRoles(rolesArr);
@@ -1777,12 +2076,12 @@ const isEarlyOutByYangonTime = (isoString) => {
 
     // leader login
     if (has("leader")) {
-      await loadAllUsers(true);
+     /*  await loadAllUsers(true); */
     }
 
     // admin login
     if (has("admin")) {
-      await loadAllUsers(true);
+     /*  await loadAllUsers(true); */
     }
 
   } catch (err) {
@@ -1793,14 +2092,14 @@ const isEarlyOutByYangonTime = (isoString) => {
 useEffect(() => {
   if (!user || activeSidebar !== "my-att") return;
   loadAttendance(user.uid, myAttendanceMonth);
-}, [user, activeSidebar, myAttendanceMonth]);
+}, [user, activeSidebar, myAttendanceMonth, companyId]);
 
 useEffect(() => {
   if (!user || activeSidebar !== "my-leave") return;
 
   loadLeaves(user.uid);
   loadOvertime(user.uid);
-}, [user, activeSidebar]);
+}, [user, activeSidebar, companyId]);
 
 useEffect(() => {
   if (!user || activeSidebar !== "my-panel") return;
@@ -1809,13 +2108,13 @@ useEffect(() => {
   loadLeaves(user.uid);
   loadPoReports(user.uid);
   loadCompanyHolidaysForMonth(myCalendarMonth);
-}, [user, activeSidebar, myCalendarMonth]);
+}, [user, activeSidebar, myCalendarMonth, companyId]);
 
 useEffect(() => {
   if (!user || activeSidebar !== "my-po") return;
   loadAllUsers();
   loadPoReports(user.uid);
-}, [user, activeSidebar]);
+}, [user, activeSidebar, companyId]);
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-att") return;
@@ -1825,7 +2124,7 @@ useEffect(() => {
    /*  await loadAllAttendance(); */
    await loadAllAttendance(attendanceMonth);
   })();
-}, [user, isAdmin, activeSidebar,attendanceMonth]);
+}, [user, isAdmin, activeSidebar,attendanceMonth, companyId]);
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-att-overview") return;
@@ -1835,16 +2134,8 @@ useEffect(() => {
     await loadOverviewAttendance(overviewMonth);
     await loadOverviewLeaves(overviewMonth);
   })();
-}, [user, isAdmin, activeSidebar, overviewMonth]);
+}, [user, isAdmin, activeSidebar, overviewMonth, companyId]);
 
-/* useEffect(() => {
-  if (!user || !isAdmin || activeSidebar !== "admin-leave") return;
-
-  (async () => {
-    await ensureUsersLoaded();
-    await loadAllLeaves();
-  })();
-}, [user, isAdmin, activeSidebar]); */
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-leave") return;
@@ -1862,6 +2153,7 @@ useEffect(() => {
   activeSidebar,
   showApprovedLeave,
   showRejectedLeave,
+  companyId
 ]);
 
 useEffect(() => {
@@ -1880,6 +2172,7 @@ useEffect(() => {
   activeSidebar,
   showApprovedOT,
   showRejectedOT,
+  companyId
 ]);
 
 useEffect(() => {
@@ -1889,7 +2182,7 @@ useEffect(() => {
     await ensureUsersLoaded();
     await loadAllPoReports(poMonthFilter);
   })();
-}, [user, isAdmin, activeSidebar, poMonthFilter]);
+}, [user, isAdmin, activeSidebar, poMonthFilter, companyId]);
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-att-summary") return;
@@ -1899,7 +2192,7 @@ useEffect(() => {
    /*  await loadAllAttendance(); */
     await loadAllAttendance(attendanceMonth);
   })();
-}, [user, isAdmin, activeSidebar,attendanceMonth]);
+}, [user, isAdmin, activeSidebar,attendanceMonth, companyId]);
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-leave-balance") return;
@@ -1908,7 +2201,7 @@ useEffect(() => {
     await ensureUsersLoaded();
     await loadLeaveBalances();
   })();
-}, [user, isAdmin, activeSidebar]);
+}, [user, isAdmin, activeSidebar, companyId]);
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-leave-summary") return;
@@ -1918,7 +2211,7 @@ useEffect(() => {
     await loadLeaveBalances();
     await loadAllLeaves();
   })();
-}, [user, isAdmin, activeSidebar]);
+}, [user, isAdmin, activeSidebar, companyId]);
 
 useEffect(() => {
   if (!user || !isLeader || activeSidebar !== "member-att-panel") return;
@@ -1928,7 +2221,7 @@ useEffect(() => {
     const ids = await loadLeaderMembers(user.uid);
     await loadLeaderAttendance(ids, attendanceMonthFilter);
   })();
-}, [user, isLeader, activeSidebar, attendanceMonthFilter]);
+}, [user, isLeader, activeSidebar, attendanceMonthFilter, companyId]);
 
 useEffect(() => {
   if (!user || !isLeader || activeSidebar !== "member-leave-panel") return;
@@ -1938,7 +2231,7 @@ useEffect(() => {
     const ids = await loadLeaderMembers(user.uid);
     await loadLeaderLeaves(ids);
   })();
-}, [user, isLeader, activeSidebar]);
+}, [user, isLeader, activeSidebar, companyId]);
 
 useEffect(() => {
   if (!user || !isLeader || activeSidebar !== "member-ot-panel") return;
@@ -1948,7 +2241,7 @@ useEffect(() => {
     const ids = await loadLeaderMembers(user.uid);
     await loadLeaderOvertime(ids);
   })();
-}, [user, isLeader, activeSidebar]);
+}, [user, isLeader, activeSidebar, companyId]);
 
 useEffect(() => {
   if (!user || !isAdmin || activeSidebar !== "admin-payroll") return;
@@ -1957,7 +2250,7 @@ useEffect(() => {
     await ensureUsersLoaded();
     await loadEmployees(); // optional, but good if PayrollCalculator uses employees too
   })();
-}, [user, isAdmin, activeSidebar]);
+}, [user, isAdmin, activeSidebar, companyId]);
 
 
   const handleLogout = async () => {
@@ -1996,12 +2289,41 @@ useEffect(() => {
 
 
   //Calculate Payroll and summary
-  const loadAllPayroll = async () => {
+/*   const loadAllPayroll = async () => {
   try {
     const snap = await getDocs(collection(db, "payrollSummary"));
     const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     // ✅ safe sort: handles missing createdAt
+    list.sort((a, b) => {
+      const da = a.createdAt ? new Date(a.createdAt) : new Date(0);
+      const db = b.createdAt ? new Date(b.createdAt) : new Date(0);
+      return db - da;
+    });
+
+    setAllPayroll(list);
+  } catch (err) {
+    console.error("❌ loadAllPayroll failed:", err);
+    notify("❌ Payroll Summary cannot load: " + err.message);
+  }
+}; */
+
+const loadAllPayroll = async () => {
+  try {
+    if (!companyId) return;
+
+    const q = query(
+      collection(db, "payrollSummary"),
+      where("companyId", "==", companyId)
+    );
+
+    const snap = await getDocs(q);
+
+    const list = snap.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
     list.sort((a, b) => {
       const da = a.createdAt ? new Date(a.createdAt) : new Date(0);
       const db = b.createdAt ? new Date(b.createdAt) : new Date(0);
@@ -2064,6 +2386,7 @@ const sendSelectedPayslips = async () => {
 
 useEffect(() => {
   if (
+    companyId &&
     isAdmin &&
     canAccessPayroll &&
     (
@@ -2071,7 +2394,7 @@ useEffect(() => {
   ) {
     loadAllPayroll();
   }
-}, [isAdmin, canAccessPayroll, activeSidebar]);
+}, [isAdmin, canAccessPayroll, activeSidebar, companyId]);
 
 
  // loadMyPayslips
@@ -2083,6 +2406,7 @@ useEffect(() => {
 
     const q = query(
       collection(db, "payslips"),
+      where("companyId", "==", companyId),
       where("userId", "==", uid)
     );
 
@@ -2103,10 +2427,10 @@ useEffect(() => {
 }, [user?.uid]);
 
 useEffect(() => {
-  if (user && activeSidebar === "my-payslip") {
+  if (companyId && user && activeSidebar === "my-payslip") {
     loadMyPayslips(user.uid);
   }
-},  [activeSidebar, user, loadMyPayslips]);
+},  [activeSidebar, user, loadMyPayslips, companyId]);
  
 
 
@@ -2272,6 +2596,7 @@ const sendPayslip = async (p) => {
   if (!p.userId) return notify("User ID missing");
 
   await addDoc(collection(db, "payslips"), {
+    companyId,
     userId: p.userId,
     payrollData: p,
     paymonth: p.month,
@@ -2280,6 +2605,7 @@ const sendPayslip = async (p) => {
   });
 
   await addDoc(collection(db, "notifications"), {
+    companyId,
     userId: p.userId,
     type: "payslip",
     title: "Payslip Available",
@@ -2332,9 +2658,12 @@ const deletePayrollSummary = async (id) => {
 
 const loadEmployees = async (forceRefresh = false) => {
   try {
-    if (!forceRefresh) {
-      const cached = loadCache(CACHE_KEYS.employees, []);
+    if (!companyId) return [];
 
+    const cacheKey = companyCacheKey(CACHE_KEYS.employees);
+
+    if (!forceRefresh) {
+      const cached = loadCache(cacheKey, []);
       if (cached.length > 0) {
         setEmployees(cached);
         return cached;
@@ -2343,23 +2672,25 @@ const loadEmployees = async (forceRefresh = false) => {
 
     const q = query(
       collection(db, "users"),
-      orderBy("eid", "asc")
+      where("companyId", "==", companyId)
     );
 
     const snap = await getDocs(q);
 
     const list = snap.docs
-      .map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }))
-      .filter(
-        (u) =>
-          (u.employmentStatus || "active") !== "inactive"
-      );
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((u) => (u.employmentStatus || "active") !== "inactive");
+
+    list.sort((a, b) =>
+      String(a.eid || a.employeeCode || "").localeCompare(
+        String(b.eid || b.employeeCode || ""),
+        undefined,
+        { numeric: true }
+      )
+    );
 
     setEmployees(list);
-    saveCache(CACHE_KEYS.employees, list);
+    saveCache(cacheKey, list);
 
     return list;
   } catch (err) {
@@ -2374,15 +2705,16 @@ const loadEmployees = async (forceRefresh = false) => {
       if (!window.confirm("Delete this employee?")) return;
       await deleteDoc(doc(db, "users", id));
       notify("🗑 Employee deleted");
-      clearCache(CACHE_KEYS.employees);
-      clearCache(CACHE_KEYS.usersMap);
+      clearCache(companyCacheKey(CACHE_KEYS.employees));
+clearCache(companyCacheKey(CACHE_KEYS.usersMap));
       await loadEmployees(true);
       await loadAllUsers(true);
     };
 
-    useEffect(() => {
-    if (isAdmin) loadEmployees();
-  }, [role]);
+   useEffect(() => {
+  if (!isAdmin || !companyId) return;
+  loadEmployees();
+}, [isAdmin, companyId]);
 
 /*   const loadAttendance = async (uid) => {
     const q = query(collection(db, "attendance"), where("userId", "==", uid));
@@ -2398,37 +2730,45 @@ const loadEmployees = async (forceRefresh = false) => {
   uid,
   month = myCalendarMonth || getCurrentMonth()
 ) => {
+  if (!companyId || !uid) return;
+
   const { start, endExclusive } = ExportmonthRange(month);
 
   const q = query(
     collection(db, "attendance"),
+    where("companyId", "==", companyId),
     where("userId", "==", uid),
     where("date", ">=", start),
     where("date", "<", endExclusive)
   );
 
   const snap = await getDocs(q);
-
-  const list = snap.docs.map((d) => ({
-    id: d.id,
-    ...d.data(),
-  }));
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   list.sort((a, b) => new Date(b.date) - new Date(a.date));
   setAttendance(list);
 };
 
-  const loadLeaves = async (uid) => {
-    const q = query(collection(db, "leaves"), where("userId", "==", uid));
-    const snap = await getDocs(q);
-    
-    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    list.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));// ✅ newest first
-    setLeaves(list);
-  };
+const loadLeaves = async (uid) => {
+  if (!companyId || !uid) return;
+
+  const q = query(
+    collection(db, "leaves"),
+    where("companyId", "==", companyId),
+    where("userId", "==", uid)
+  );
+
+  const snap = await getDocs(q);
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  list.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+  setLeaves(list);
+};
 
   const loadOvertime = async (uid) => {
-    const q = query(collection(db, "overtimeRequests"), where("userId", "==", uid));
+    if (!companyId) return;
+
+    const q = query(collection(db, "overtimeRequests"), where("companyId", "==", companyId), where("userId", "==", uid));
     const snap = await getDocs(q);
   
     const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -2437,7 +2777,14 @@ const loadEmployees = async (forceRefresh = false) => {
   };
 
   const loadAllPayslips = async () => {
-  const snap = await getDocs(collection(db, "payslips"));
+  if (!companyId) return;
+
+  const q = query(
+    collection(db, "payslips"),
+    where("companyId", "==", companyId)
+  );
+
+  const snap = await getDocs(q);
   setAllPayslips(snap.docs.map(d => ({ id: d.id, ...d.data() })));
 };
 
@@ -2460,18 +2807,25 @@ const loadEmployees = async (forceRefresh = false) => {
     setUsersMap(map);
   }; */
 
-  const loadAllUsers = async (forceRefresh = false) => {
-  if (!forceRefresh) {
-    const cached = loadCache(CACHE_KEYS.usersMap, null);
+const loadAllUsers = async (forceRefresh = false) => {
+  if (!companyId) return {};
 
+  const cacheKey = companyCacheKey(CACHE_KEYS.usersMap);
+
+  if (!forceRefresh) {
+    const cached = loadCache(cacheKey, null);
     if (cached) {
       setUsersMap(cached);
       return cached;
     }
   }
 
-  const snap = await getDocs(collection(db, "users"));
+  const q = query(
+    collection(db, "users"),
+    where("companyId", "==", companyId)
+  );
 
+  const snap = await getDocs(q);
   const map = {};
 
   snap.forEach((docSnap) => {
@@ -2480,6 +2834,7 @@ const loadEmployees = async (forceRefresh = false) => {
 
     map[key] = {
       id: key,
+      docId: docSnap.id,
       ...d,
       jobAllowance: Number(d.JobTitleAllowance || 0),
       directorAllowance: Number(d.DirectorAllowance || 0),
@@ -2488,7 +2843,7 @@ const loadEmployees = async (forceRefresh = false) => {
   });
 
   setUsersMap(map);
-  saveCache(CACHE_KEYS.usersMap, map);
+  saveCache(cacheKey, map);
 
   return map;
 };
@@ -2509,35 +2864,37 @@ const ensureUsersLoaded = async () => {
   }; */
 
   const loadAllAttendance = async (month = attendanceMonth) => {
-    try {
-      const { start, endExclusive } = ExportmonthRange(month);
+  try {
+    if (!companyId) return;
 
-      const q = query(
-        collection(db, "attendance"),
-        where("date", ">=", start),
-        where("date", "<", endExclusive)
-      );
+    const { start, endExclusive } = ExportmonthRange(month);
 
-      const snap = await getDocs(q);
+    const q = query(
+      collection(db, "attendance"),
+      where("companyId", "==", companyId),
+      where("date", ">=", start),
+      where("date", "<", endExclusive)
+    );
 
-      const list = snap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
+    const snap = await getDocs(q);
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      list.sort((a, b) => new Date(b.date) - new Date(a.date));
-      setAllAttendance(list);
-    } catch (err) {
-      console.error("loadAllAttendance error:", err);
-      notify("❌ Attendance cannot load: " + err.message);
-    }
-  };
+    list.sort((a, b) => new Date(b.date) - new Date(a.date));
+    setAllAttendance(list);
+  } catch (err) {
+    console.error("loadAllAttendance error:", err);
+    notify("❌ Attendance cannot load: " + err.message);
+  }
+};
 
   const loadOverviewAttendance = async (month = overviewMonth) => {
+  if (!companyId) return;
+
   const { start, endExclusive } = ExportmonthRange(month);
 
   const q = query(
     collection(db, "attendance"),
+    where("companyId", "==", companyId),
     where("date", ">=", start),
     where("date", "<", endExclusive)
   );
@@ -2553,10 +2910,13 @@ const ensureUsersLoaded = async () => {
 };
 
 const loadOverviewLeaves = async (month = overviewMonth) => {
+  if (!companyId) return;
+
   const { start, endExclusive } = ExportmonthRange(month);
 
   const q = query(
     collection(db, "leaves"),
+    where("companyId", "==", companyId),
     where("startDate", "<", endExclusive)
   );
 
@@ -2578,6 +2938,8 @@ const loadOverviewLeaves = async (month = overviewMonth) => {
 };
 
   const loadAllLeaves = async () => {
+  if (!companyId) return;
+
   const statuses = ["pending", "leader_approved"];
 
   if (showApprovedLeave) statuses.push("approved");
@@ -2585,19 +2947,20 @@ const loadOverviewLeaves = async (month = overviewMonth) => {
 
   const q = query(
     collection(db, "leaves"),
+    where("companyId", "==", companyId),
     where("status", "in", statuses)
   );
 
   const snap = await getDocs(q);
-
   const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   list.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
-
   setAllLeaves(list);
 };
 
   const loadAllOvertime = async () => {
+  if (!companyId) return;
+
   const statuses = ["pending"];
 
   if (showApprovedOT) statuses.push("approved");
@@ -2605,6 +2968,7 @@ const loadOverviewLeaves = async (month = overviewMonth) => {
 
   const q = query(
     collection(db, "overtimeRequests"),
+    where("companyId", "==", companyId),
     where("status", "in", statuses)
   );
 
@@ -2664,7 +3028,7 @@ const adminCreateLeaveForStaff = async () => {
 
     await addDoc(collection(db, "leaves"), {
       ...newLeave,
-
+      companyId,
       status: "approved",
       leaderStatus: "skipped_by_admin",
       adminStatus: "approved",
@@ -2728,33 +3092,39 @@ const adminCreateLeaveForStaff = async () => {
 };
 
 
-  const loadCompanyHolidaysForMonth = async (yyyyMm) => {
-    try {
-      const { start, end } = monthRange(yyyyMm);
-      const q = query(
-        collection(db, "companyCalendar"),
-        where("date", ">=", start),
-        where("date", "<=", end),
-        orderBy("date", "asc")
-      );
-      const snap = await getDocs(q);
-      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setCompanyHolidays(rows);
-    } catch (err) {
-      console.error(err);
-      notify("❌ Cannot load company holidays: " + err.message);
-    }
-  };
+const loadCompanyHolidaysForMonth = async (yyyyMm) => {
+  try {
+    if (!companyId || !yyyyMm) return;
 
-    useEffect(() => {
-    if (!isAdmin) return;
-    loadCompanyHolidaysForMonth(holidayMonth);
-  }, [isAdmin, holidayMonth]);
+    const { start, end } = monthRange(yyyyMm);
+
+    const q = query(
+      collection(db, "companyCalendar"),
+      where("companyId", "==", companyId),
+      where("date", ">=", start),
+      where("date", "<=", end),
+      orderBy("date", "asc")
+    );
+
+    const snap = await getDocs(q);
+    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    setCompanyHolidays(rows);
+  } catch (err) {
+    console.error(err);
+    notify("❌ Cannot load company holidays: " + err.message);
+  }
+};
 
   useEffect(() => {
-    if (!isAdmin) return;
-    loadCompanyHolidaysForMonth(overviewMonth);
-  }, [isAdmin, overviewMonth]);
+  if (!isAdmin || !companyId) return;
+  loadCompanyHolidaysForMonth(holidayMonth);
+}, [isAdmin, holidayMonth, companyId]);
+
+ useEffect(() => {
+  if (!isAdmin || !companyId) return;
+  loadCompanyHolidaysForMonth(overviewMonth);
+}, [isAdmin, overviewMonth, companyId]);
 
   //Admin CRUD for Company Calendar
  const adminAddOrUpdateHoliday = async () => {
@@ -2870,6 +3240,7 @@ const addPoReport = async () => {
   const totalTimeByHour = calcPoDuration(poFrom, poTo);
   if (totalTimeByHour === "Invalid") return notify("Invalid time range.");
   await addDoc(collection(db, "poReports"), {
+    companyId,
     userId: user.uid,
     date: poDate,
     fromTime: poFrom,
@@ -2923,7 +3294,7 @@ const updatePoReport = async () => {
 
 // Load user’s P/O reports
 const loadPoReports = async (uid) => {
-  const q = query(collection(db, "poReports"), where("userId", "==", uid));
+  const q = query(collection(db, "poReports"), where("companyId", "==", companyId), where("userId", "==", uid));
   const snap = await getDocs(q);
  /*  setPoList(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); */
     const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -2933,19 +3304,12 @@ const loadPoReports = async (uid) => {
 };
 
 // Load all P/O reports (for admin)
-/* const loadAllPoReports = async () => {
-  const snap = await getDocs(collection(db, "poReports"));
-  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  list.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt));
-
-  setAllPoList(list);
-}; */
-
 const loadAllPoReports = async (month = poMonthFilter) => {
   const { start, endExclusive } = ExportmonthRange(month);
 
   const q = query(
     collection(db, "poReports"),
+    where("companyId", "==", companyId),
     where("date", ">=", start),
     where("date", "<", endExclusive)
   );
@@ -3092,6 +3456,7 @@ const checkLocationRange = async () => {
 
     const q = query(
       collection(db, "attendance"),
+      where("companyId", "==", companyId),
       where("userId", "==", user.uid),
       where("date", "==", today)
     );
@@ -3106,6 +3471,7 @@ const checkLocationRange = async () => {
     const now = new Date();
 
     await addDoc(collection(db, "attendance"), {
+      companyId,
       userId: user.uid,
       date: today,
       clockIn: now.toISOString(),
@@ -3173,6 +3539,7 @@ const clockOut = async () => {
 
     const q = query(
       collection(db, "attendance"),
+      where("companyId", "==", companyId),
       where("userId", "==", user.uid),
       where("date", "==", today)
     );
@@ -3284,6 +3651,7 @@ const clockOut = async () => {
     // 1) Check if attendance doc already exists for that user/day
     const q = query(
       collection(db, "attendance"),
+      where("companyId", "==", companyId),
       where("userId", "==", selectedUserId),
       where("date", "==", createDate)
     );
@@ -3321,6 +3689,7 @@ const clockOut = async () => {
     } else {
       // ✅ Create new doc (for forgotten day)
       await addDoc(collection(db, "attendance"), {
+        companyId,
         userId: selectedUserId,
         date: createDate,
         clockIn: clockInISO,
@@ -3336,6 +3705,7 @@ const clockOut = async () => {
     }
 
     const docRef = await addDoc(collection(db, "attendance"), {
+          companyId,
           userId: selectedUserId,
           date: createDate,
           clockIn: clockInISO,
@@ -3638,6 +4008,7 @@ const adminDeleteMonthAttendance = async () => {
     // ✅ Only ONE where => no composite index needed
     const q = query(
       collection(db, "attendance"),
+      where("companyId", "==", companyId),
       where("userId", "==", selectedUserId)
     );
 
@@ -3967,7 +4338,7 @@ const leaderUpdateAttendanceTime = async () => {
 
   const loadLeaveBalances = async (year = currentYear) => {
     const snap = await getDocs(
-      query(collection(db, "leaveBalances"), where("year", "==", year))
+      query(collection(db, "leaveBalances"), where("companyId", "==", companyId),where("year", "==", year))
     );
 
     const map = {};
@@ -4257,8 +4628,8 @@ const selectedDayIsAbsentFull =
      if (!emp.locations || emp.locations.length !== 2) return notify("Please fill both locations.");
      await updateDoc(doc(db, "users", emp.id), { locations: emp.locations });
      notify("✅ Locations saved successfully.");
-     clearCache(CACHE_KEYS.employees);
-    clearCache(CACHE_KEYS.usersMap);
+    clearCache(companyCacheKey(CACHE_KEYS.employees));
+    clearCache(companyCacheKey(CACHE_KEYS.usersMap));
     await loadEmployees(true);
     await loadAllUsers(true);
    };
@@ -4268,8 +4639,8 @@ const selectedDayIsAbsentFull =
        const attendanceLocationMode = getAttendanceLocationModeValue(emp);
        await updateDoc(doc(db, "users", emp.id), { attendanceLocationMode });
        notify("✅ GPS setting saved successfully.");
-       clearCache(CACHE_KEYS.employees);
-        clearCache(CACHE_KEYS.usersMap);
+        clearCache(companyCacheKey(CACHE_KEYS.employees));
+        clearCache(companyCacheKey(CACHE_KEYS.usersMap));
         await loadEmployees(true);
         await loadAllUsers(true);
      } catch (err) {
@@ -4379,6 +4750,7 @@ const selectedDayIsAbsentFull =
   const applyLeave = async () => {
     if (!leaveStart || !leaveEnd || !leaveReason) return notify("Please fill leave start, end and reason.");
     await addDoc(collection(db, "leaves"), {
+      companyId,
       userId: user.uid,
       startDate: leaveStart,
       endDate: leaveEnd,
@@ -4459,6 +4831,7 @@ const selectedDayIsAbsentFull =
     } else {
       await addDoc(collection(db, "overtimeRequests"), {
         ...payload,
+        companyId,
         createdAt: new Date().toISOString(),
       });
       notify("✅ Overtime request submitted.");
@@ -4684,6 +5057,7 @@ const adminUpdateLeaveStatus = async (leaveId, decision, leaveRow) => {
 
     if (shouldCreateNotification && notificationUserId) {
       await addDoc(collection(db, "notifications"), {
+        companyId,
         userId: notificationUserId,
         type: "leave",
         title: "Leave Approved",
@@ -5020,6 +5394,7 @@ const leaveSummaryUids = Object.keys(usersMap || {})
 
         const q = query(
           collection(db, "attendance"),
+          where("companyId", "==", companyId),
           where("date", ">=", start),
           where("date", "<", endExclusive)
         );
@@ -5086,6 +5461,7 @@ const leaveSummaryUids = Object.keys(usersMap || {})
 
     const q = query(
       collection(db, "leaves"),
+      where("companyId", "==", companyId),
       where("startDate", "<", endExclusive)
     );
 
@@ -5128,7 +5504,7 @@ const leaveSummaryUids = Object.keys(usersMap || {})
 
 const fetchLeaveBalancesMap = async (year = currentYear) => {
   const snap = await getDocs(
-    query(collection(db, "leaveBalances"), where("year", "==", year))
+    query(collection(db, "leaveBalances"), where("companyId", "==", companyId),where("year", "==", year))
   );
 
   const map = {};
@@ -5572,7 +5948,7 @@ useEffect(() => {
   }
 
   if (!user) {
-    return (
+      return (
       <div className="login-page">
         <div className="login-box">
           <h2>Staff Attendance Login</h2>
@@ -5611,8 +5987,10 @@ useEffect(() => {
             </button>
 
           </form>
+          
         </div>
       </div>
+      
     );
   }
 
@@ -5669,6 +6047,15 @@ useEffect(() => {
   </div>
 
     <nav>
+    {isSuperAdmin && (
+           <a className="nav-item blue" href="?tab=company-management" onClick={(e) => handleTabClick(e, "company-management")}>
+              <span className="icon">🏢</span> {!desktopSidebarCollapsed && <span className="nav-text">Company Management</span>}
+          </a>
+   )}
+
+   {!isSuperAdmin && (
+    <>
+
     <button  type="button"  className="menu-group-btn"  onClick={() => handleGroupClick("myMenu")}  title="My Menu">
     {desktopSidebarCollapsed ? (<span className="group-icon">🏠</span>  ) : (
       <>
@@ -5676,7 +6063,7 @@ useEffect(() => {
        <span className="arrow">{openMenuGroup === "myMenu" ? "▾" : "▸"}</span>
       </>
     )}
-  </button>
+   </button>
 
     {openMenuGroup === "myMenu" && (
       <div className="menu-group-list">
@@ -5698,7 +6085,10 @@ useEffect(() => {
        
       </div>
     )}
+    </>
+    )}
 
+    
     {isLeader && (
       <>
       
@@ -5924,6 +6314,8 @@ useEffect(() => {
               </div>
             </div>
           )}
+
+          
 
         {/* My Panel (clock, save location, personal lists) */}
         {activeSidebar === "my-panel" && (
@@ -7411,7 +7803,8 @@ useEffect(() => {
         {/* ✅ Only show LOGIN EMAIL + TEMP PASSWORD when creating */}
         {!selectedEmpId && (
           <>
-           <label style={{ marginBottom: "10px" }}>Login Email </label>
+          
+           <label style={{ marginBottom: "10px", display:"inline" }}>Login Email <span style={{ color: "red" }}>***</span></label>
             <input
               type="email"
               placeholder="Login Email"
@@ -7421,7 +7814,7 @@ useEffect(() => {
               name="new-login-email"
             />
 
-            <label style={{ marginBottom: "10px" }}>Temporary Password </label>
+            <label style={{ marginBottom: "10px", display:"inline" }}>Temporary Password <span style={{ color: "red" }}>***</span></label>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 style={{ flex: 1 }}
@@ -7460,18 +7853,27 @@ useEffect(() => {
       </div>
       
       <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
-        <button
-          className="btn blue"
-          onClick={async () => {
-            if (selectedEmpId) await updateEmployee();
-            else await createEmployee();
+       <button
+        className="btn blue"
+        disabled={!canSave}
+        style={{
+          opacity: !canSave ? 0.5 : 1,
+          cursor: !canSave ? "not-allowed" : "pointer",
+        }}
+        onClick={async () => {
+          if (!canSave) {
+            notify("Login Email and Temporary Password are required.");
+            return;
+          }
 
-            // close modal after save
-            setShowEmpModal(false);
-          }}
-        >
-          💾 Save
-        </button>
+          if (selectedEmpId) await updateEmployee();
+          else await createEmployee();
+
+          setShowEmpModal(false);
+        }}
+      >
+        💾 Save
+      </button>
 
         <button
           className="btn red"
@@ -9391,6 +9793,157 @@ useEffect(() => {
       <button className="btn blue" onClick={exportLeaveBalance}>  Export Leave Balance</button>
     </div>
   </section>
+)}
+
+    {activeSidebar === "company-management" && isSuperAdmin && (
+  <div className="page">
+    <div className="card company-card">
+      <h2>Company Management</h2>
+
+      <div className="form-grid">
+        <input
+        placeholder="Company ID e.g. simplez_test"
+        value={setupCompanyId}
+        onChange={(e) => setSetupCompanyId(e.target.value)}
+        autoComplete="off"
+        name="company_id_field"
+      />
+
+        <input
+          placeholder="Company Name"
+          value={setupCompanyName}
+          onChange={(e) => setSetupCompanyName(e.target.value)}
+        />
+
+        <input
+          placeholder="Admin Name"
+          value={setupAdminName}
+          onChange={(e) => setSetupAdminName(e.target.value)}
+        />
+
+        <input
+          placeholder="Admin Email"
+          value={setupAdminEmail}
+          onChange={(e) => setSetupAdminEmail(e.target.value)}
+          autoComplete="new-email"
+          name="admin_email_field"
+        />
+
+        <input
+          type="password"
+          placeholder="Admin Password"
+          value={setupAdminPassword}
+          onChange={(e) => setSetupAdminPassword(e.target.value)}
+          autoComplete="new-password"
+          name="admin_password_field"
+        />
+      </div>
+
+      <button className="btn submit" onClick={createCompanyAndAdmin}>
+        Create Company + Admin
+      </button>
+    </div>
+
+    <div className="company-list-card">
+    <h3>Company List</h3>
+
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>Company ID</th>
+          <th>Company Name</th>
+          <th>Admins</th>
+          <th>Status</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+
+      <tbody>
+        {companies.map((c) => (
+          <tr key={c.id}>
+            <td>{c.companyId || c.id}</td>
+            <td>{c.companyName || "-"}</td>
+            <td>
+            {(companyAdminsMap[c.companyId || c.id] || []).map((a) => (
+              <div key={a.id}>
+                {a.name || "-"} — {a.email || "-"}
+              </div>
+            ))}
+
+            {(companyAdminsMap[c.companyId || c.id] || []).length === 0 && "-"}
+          </td>
+            <td>{c.status || "active"}</td>
+            <td>
+              <div style={{display:"flex" , gap: 10}}>
+                <button
+                  className="btn small"
+                  onClick={() => openAddCompanyAdmin(c)}
+                >
+                  ➕ Add Admin
+                </button>
+                <button className="btn small btn-warning" onClick={() => disableCompany(c.id)}>
+                    🚫 Disable
+                </button>
+
+                <button className="btn small btn-danger" onClick={() => deleteCompany(c.id)}>
+                    🗑 Delete
+                </button>
+                </div>
+            </td>
+          </tr>
+        ))}
+
+        {companies.length === 0 && (
+          <tr>
+            <td colSpan="5">No companies yet.</td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+
+    {adminCompanyId && (
+  <div className="company-card">
+    <h3>Add Admin to {adminCompanyName}</h3>
+
+    <div className="form-grid">
+      <input value={adminCompanyId} disabled />
+
+      <input
+        placeholder="Admin Name"
+        value={newCompanyAdminName}
+        onChange={(e) => setNewCompanyAdminName(e.target.value)}
+      />
+
+      <input
+        placeholder="Admin Email"
+        value={newCompanyAdminEmail}
+        onChange={(e) => setNewCompanyAdminEmail(e.target.value)}
+        autoComplete="new-email"
+      />
+
+      <input
+        type="password"
+        placeholder="Admin Password"
+        value={newCompanyAdminPassword}
+        onChange={(e) => setNewCompanyAdminPassword(e.target.value)}
+        autoComplete="new-password"
+      />
+    </div>
+    <div className="form-grid">
+      <button className="btn submit" onClick={addAdminToCompany}>
+        Add Admin
+      </button>
+
+      <button className="btn" onClick={() => setAdminCompanyId("")}>
+        Cancel
+      </button>
+    </div>
+  </div>
+)}
+
+  </div>
+
+  </div>
 )}
 
     </main>
