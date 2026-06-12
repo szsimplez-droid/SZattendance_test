@@ -3236,23 +3236,43 @@ const openEditPo = (row) => {
 };
 
 const addPoReport = async () => {
-  if (!poDate || !poFrom || !poTo || !poReason) return notify("Please fill all P/O fields.");
-  const totalTimeByHour = calcPoDuration(poFrom, poTo);
-  if (totalTimeByHour === "Invalid") return notify("Invalid time range.");
-  await addDoc(collection(db, "poReports"), {
-    companyId,
-    userId: user.uid,
-    date: poDate,
-    fromTime: poFrom,
-    toTime: poTo,
-    POreason: poReason,
-    totalTimeByHour,
-    status: "pending",
-    createdAt: new Date().toISOString(),
-  });
-  notify("✅ P/O report added.");
-  setPoDate(""); setPoFrom(""); setPoTo("");setpoReason("");
-  loadPoReports(user.uid);
+  try {
+    if (!companyId) return notify("Company ID not loaded.");
+    if (!poDate || !poFrom || !poTo || !poReason) {
+      return notify("Please fill all P/O fields.");
+    }
+
+    const totalTimeByHour = calcPoDuration(poFrom, poTo);
+    if (totalTimeByHour === "Invalid") return notify("Invalid time range.");
+
+    await addDoc(collection(db, "poReports"), {
+      companyId,
+      userId: user.uid,
+      date: poDate,
+      fromTime: poFrom,
+      toTime: poTo,
+      POreason: poReason,
+      totalTimeByHour,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    });
+
+    notify("✅ P/O report added.");
+
+    setPoDate("");
+    setPoFrom("");
+    setPoTo("");
+    setpoReason("");
+
+    await loadPoReports(user.uid);
+
+    if (isAdmin) {
+      await loadAllPoReports(poMonthFilter);
+    }
+  } catch (err) {
+    console.error("addPoReport error:", err);
+    notify("❌ P/O add failed: " + err.message);
+  }
 };
 
 const updatePoReport = async () => {
@@ -9370,7 +9390,7 @@ useEffect(() => {
         {canAccessPayroll && isAdmin && activeSidebar === "admin-payroll" && (
           <section className="card">
             <h2>Payroll Calculator</h2>
-            <PayrollCalculator usersMap={usersMap} employees={employees} />
+            <PayrollCalculator usersMap={usersMap} employees={employees} companyId={companyId} />
           </section>
         )} 
 

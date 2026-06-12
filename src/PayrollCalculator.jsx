@@ -23,7 +23,7 @@ const notify = (text) => {
   setTimeout(() => div.remove(), 3000);
 };
 
-export default function PayrollCalculator({ usersMap }) {
+export default function PayrollCalculator({ usersMap, companyId }) {
   const [selectedUserId, setSelectedUserId] = useState("");
 
   function minutesToHM(mins) {
@@ -220,7 +220,11 @@ const loadPayrollAutoData = async (uid, ym) => {
   };
 
   // --- LOAD ATTENDANCE (FILTER BY MONTH) ---
-  const attQ = query(collection(db, "attendance"), where("userId", "==", uid));
+  const attQ = query(
+    collection(db, "attendance"),
+    where("companyId", "==", companyId),
+    where("userId", "==", uid)
+  );
   const attSnap = await getDocs(attQ);
 
   let attendanceDays = 0;
@@ -253,7 +257,11 @@ const loadPayrollAutoData = async (uid, ym) => {
   }); 
 
   // --- LOAD LEAVES (FILTER BY MONTH) ---
-  const leaveQ = query(collection(db, "leaves"), where("userId", "==", uid));
+  const leaveQ = query(
+  collection(db, "leaves"),
+  where("companyId", "==", companyId),
+  where("userId", "==", uid)
+);
   const leaveSnap = await getDocs(leaveQ);
 
   let annual = 0,
@@ -306,6 +314,7 @@ const loadPayrollAutoData = async (uid, ym) => {
   // --- LOAD OVERTIME (FILTER BY MONTH) ---
   const otQ = query(
     collection(db, "overtimeRequests"),
+    where("companyId", "==", companyId),
     where("userId", "==", uid)
   );
   const otSnap = await getDocs(otQ);
@@ -540,14 +549,14 @@ const sortedUsers = Object.entries(usersMap)
   
     const saveDraft = async () => {
       await setDoc(
-        doc(db, "payrollDrafts", selectedUserId),
+        doc(db, "payrollDrafts", `${companyId}_${selectedUserId}`),
         { ...data, rank, pitch, month },
         { merge: true }
       );
     };
   
     saveDraft();
-  }, [data, rank, pitch, month, selectedUserId]);
+  }, [data, rank, pitch, month, companyId,selectedUserId]);
 
   const resetForm = (user = {}) => {
   setData({
@@ -655,8 +664,7 @@ const handlePickUser = async (uid) => {
               languageAllowance: Number(user.LanguageAllowance || 0),
             }));
 
-            /* loadPayrollAutoData(uid); */
-            loadPayrollAutoData(uid, month);
+              loadPayrollAutoData(uid, month);
           }}
         >
           <option value="">Select Staff</option>
@@ -675,23 +683,7 @@ const handlePickUser = async (uid) => {
           <label>社員番号 <br></br>Employee No<input name="staffId" value={data.staffId} onChange={handleChange} /></label>
           <label>役職 <br></br>Position<input name="staffposition" value={data.staffposition} onChange={handleChange} /></label>
           <label>チーム <br></br>Team<input name="staffteam" value={data.staffteam} onChange={handleChange} /></label>
-         {/*  <label>For the Month of<input name="paymonth" value={data.paymonth} onChange={handleChange} /></label> */}
-         {/*  <select value={month} onChange={(e) =>{setMonth(e.target.value);setData(prev =>({ ...prev, month: e.target.value }));}}>
-          <option value="">Select Month</option>
-          <option value="January">January</option>
-          <option value="February">February</option>
-          <option value="March">March</option>
-          <option value="April">April</option>
-          <option value="May">May</option>
-          <option value="June">June</option>
-          <option value="July">July</option>
-          <option value="August">August</option>
-          <option value="September">September</option>
-          <option value="October">October</option>
-          <option value="November">November</option>
-          <option value="December">December</option>
-        </select> */}
-         <label>Select Month and Year
+           <label>Select Month and Year
         <input
           type="month"
           value={month}
@@ -816,9 +808,11 @@ const handlePickUser = async (uid) => {
   onClick={async () => {
     if (!selectedUserId) return notify("Please select a staff first!");
      if (!data.month) return notify("Please select month!");
+     if (!companyId) return notify("Company ID not loaded.");
     try {
       const payload = sanitizeForFirestore({
         ...data,
+        companyId,
         userId: selectedUserId,
         rank,
         pitch,
