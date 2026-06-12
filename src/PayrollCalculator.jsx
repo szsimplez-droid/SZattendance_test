@@ -1,4 +1,5 @@
 /* eslint-disable no-unused-vars */
+/* eslint-disable react-hooks/exhaustive-deps */
 import React, { useState, useEffect } from "react";
 import { db } from "./firebase";
 import { collection, addDoc, query, where, getDocs } from "firebase/firestore";
@@ -353,9 +354,9 @@ const loadPayrollAutoData = async (uid, ym) => {
 };
 
 useEffect(() => {
-  if (!selectedUserId || !month) return;
+  if (!selectedUserId || !month || !companyId) return;
   loadPayrollAutoData(selectedUserId, month);
-}, [selectedUserId, month]);
+}, [selectedUserId, month, companyId]);
 
 
   const [data, setData] = useState({
