@@ -107,6 +107,7 @@ export default function App() {
   const [companyId, setCompanyId] = useState("");
   const [companies, setCompanies] = useState([]);
   const [editingCompanyId, setEditingCompanyId] = useState(null);
+  const [companyStaffCountMap, setCompanyStaffCountMap] = useState({});
 
   const [adminCompanyId, setAdminCompanyId] = useState("");
   const [adminCompanyName, setAdminCompanyName] = useState("");
@@ -1597,13 +1598,6 @@ const loadCompanyAdmins = async () => {
   setCompanyAdminsMap(map);
 };
 
-useEffect(() => {
-  if (!isSuperAdmin || activeSidebar !== "company-management") return;
-
-  loadCompanies();
-  loadCompanyAdmins();
-}, [isSuperAdmin, activeSidebar]);
-
 const disableCompany = async (id) => {
   if (!window.confirm("Disable this company?")) return;
 
@@ -1688,8 +1682,9 @@ const addAdminToCompany = async () => {
     setNewCompanyAdminEmail("");
     setNewCompanyAdminPassword("");
 
-    await loadCompanies();
-    await loadCompanyAdmins();
+     await loadCompanies();
+     await loadCompanyAdmins();
+     await loadCompanyStaffCounts();
 
   } catch (err) {
     console.error(err);
@@ -1710,6 +1705,32 @@ const addAdminToCompany = async () => {
     notify("❌ Add admin failed: " + err.message);
   }
 };
+
+const loadCompanyStaffCounts = async () => {
+  const snap = await getDocs(collection(db, "users"));
+  const map = {};
+
+  snap.docs.forEach((d) => {
+    const u = { id: d.id, ...d.data() };
+    if (!u.companyId) return;
+    if (u.role === "superadmin") return;
+
+    const status = u.employmentStatus || "active";
+    if (status === "inactive" || status === "resigned") return;
+
+    map[u.companyId] = (map[u.companyId] || 0) + 1;
+  });
+
+  setCompanyStaffCountMap(map);
+};
+
+useEffect(() => {
+  if (!isSuperAdmin || activeSidebar !== "company-management") return;
+
+  loadCompanies();
+  loadCompanyAdmins();
+  loadCompanyStaffCounts();
+}, [isSuperAdmin, activeSidebar]);
 
 // end superadmin company management
 
@@ -9769,6 +9790,7 @@ useEffect(() => {
           <th>Company ID</th>
           <th>Company Name</th>
           <th>Admins</th>
+          <th>Staff Count</th>
           <th>Status</th>
           <th>Action</th>
         </tr>
@@ -9788,6 +9810,7 @@ useEffect(() => {
 
             {(companyAdminsMap[c.companyId || c.id] || []).length === 0 && "-"}
           </td>
+          <td>{companyStaffCountMap[c.companyId || c.id] || 0}</td>
             <td>{c.status || "active"}</td>
             <td>
               <div style={{display:"flex" , gap: 10}}>
