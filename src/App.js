@@ -326,53 +326,6 @@ const [openMenuGroup, setOpenMenuGroup] = useState("myMenu");
 // open in new tab end
 
 //still login start
-/* useEffect(() => {
-  const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-    try {
-      if (!firebaseUser) {
-        setUser(null);
-        setRole("");
-        setRoles([]);
-        setName("");
-        setMessage("");
-        setAuthLoading(false);
-        return;
-      }
-
-      setUser(firebaseUser);
-
-      const uid = firebaseUser.uid;
-      const ud = await getDoc(doc(db, "users", uid));
-
-      if (!ud.exists()) {
-        notify("User record not found in Firestore (users collection)");
-        setAuthLoading(false);
-        return;
-      }
-
-      const data = ud.data();
-
-      setRole(data.role || "");
-      const rolesArr = data.roles || (data.role ? [data.role] : []);
-      setRoles(rolesArr);
-      setName(data.name || "");
-
-      setMessage(
-        <>
-          Welcome {data.name || firebaseUser.email}
-        </>
-      );
-
-      if (data.location) setUserSavedLocation(data.location);
-    } catch (err) {
-      console.error("Auth restore error:", err);
-    } finally {
-      setAuthLoading(false);
-    }
-  });
-
-  return () => unsub();
-}, []); */
 
 useEffect(() => {
   const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -491,16 +444,6 @@ useEffect(() => {
 
   return () => unsub();
 }, [user, companyId]);
-
-/* const markAllRead = async () => {
-  const unread = notifications.filter((n) => !n.read);
-
-  for (let n of unread) {
-    await updateDoc(doc(db, "notifications", n.id), {
-      read: true,
-    });
-  }
-}; */
 
 const markAllRead = async () => {
   const unread = notifications.filter((n) => !n.read);
@@ -689,11 +632,6 @@ const clearCache = (key) => {
     .join(" ")
     .toLowerCase()
     .includes(q);
-
-  /* const status = e.employmentStatus || "active";
-  const matchStatus =
-    employeeStatusFilter === "all" ||
-    status === employeeStatusFilter; */
 
   const effectiveStatus = isEffectivelyResigned(e) ? "resigned" : "active";
 
@@ -1948,13 +1886,14 @@ const loadLeaderAttendance = async (
   // helper: time
   // Show only time in Myanmar timezone (no date)
   const toMyanmarTime = (utcString) =>
-    utcString
-      ? new Date(utcString).toLocaleTimeString("en-GB", {
-          timeZone: "Asia/Yangon",
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "-";
+  utcString
+    ? new Date(utcString).toLocaleTimeString("en-GB", {
+        timeZone: "Asia/Yangon",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+    : "";
 
   // Returns today's date in YYYY-MM-DD format (Yangon time)
 
@@ -2635,27 +2574,6 @@ const deletePayrollSummary = async (id) => {
   /* ---------------- data loaders ---------------- */
   
   // Load all employees
-/* const loadEmployees = async () => {
-  try {
-    if (!auth.currentUser) return;
-
-    const q = query(
-      collection(db, "users"),
-      orderBy("eid", "asc")
-    );
-
-    const snap = await getDocs(q);
-
-    const list = snap.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((u) => (u.employmentStatus || "active") !== "inactive");
-
-    setEmployees(list);
-  } catch (err) {
-    console.error("loadEmployees error:", err);
-  }
-}; */
-
 const loadEmployees = async (forceRefresh = false) => {
   try {
     if (!companyId) return [];
@@ -2715,16 +2633,6 @@ clearCache(companyCacheKey(CACHE_KEYS.usersMap));
   if (!isAdmin || !companyId) return;
   loadEmployees();
 }, [isAdmin, companyId]);
-
-/*   const loadAttendance = async (uid) => {
-    const q = query(collection(db, "attendance"), where("userId", "==", uid));
-    const snap = await getDocs(q);
-
-    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    list.sort((a, b) => new Date(b.date) - new Date(a.date)); // ✅ newest first
-    setAttendance(list);
-  };
- */
 
   const loadAttendance = async (
   uid,
@@ -2789,24 +2697,6 @@ const loadLeaves = async (uid) => {
 };
 
   //12/18
-/*   const loadAllUsers = async () => {
-    const snap = await getDocs(collection(db, "users"));
-    const map = {};
-    snap.forEach((docSnap) => {
-      const d = docSnap.data();
-
-      // ✅ KEY FIX: prefer authUid if stored
-      const key = d.authUid || docSnap.id;
-
-      map[key] = { id: key, ...d,
-        jobAllowance: Number(d.JobTitleAllowance || 0),
-        directorAllowance: Number(d.DirectorAllowance || 0),
-        languageAllowance: Number(d.LanguageAllowance || 0),
-      };
-    });
-    setUsersMap(map);
-  }; */
-
 const loadAllUsers = async (forceRefresh = false) => {
   if (!companyId) return {};
 
@@ -3820,10 +3710,16 @@ const monthlySummaryByUser = Object.keys(usersMap || {})
   // sort by employee id order
   .sort((a, b) => (a.eid || "").localeCompare(b.eid || ""));
 
-  const makeISOFromDateAndTimeYangon = (dateStr, timeStr) => {
+const makeISOFromDateAndTimeYangon = (dateStr, timeStr) => {
   if (!dateStr || !timeStr) return null;
-  const dt = new Date(`${dateStr}T${timeStr}:00`);
-  return new Date(dt.toLocaleString("en-US", { timeZone: "Asia/Yangon" })).toISOString();
+
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const [hour, minute] = timeStr.split(":").map(Number);
+
+  // Myanmar time UTC+6:30 → UTC
+  const utcMs = Date.UTC(year, month - 1, day, hour - 6, minute - 30, 0);
+
+  return new Date(utcMs).toISOString();
 };
 
 const adminUpdateAttendanceTime = async () => {
