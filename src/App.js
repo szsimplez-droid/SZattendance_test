@@ -189,6 +189,17 @@ const [leaveToDate, setLeaveToDate] = useState("");
 const [otNameFilter, setOtNameFilter] = useState("");
 const [openLeaveBalanceRows, setOpenLeaveBalanceRows] = useState({});
 
+const [selectedLeaveUsers, setSelectedLeaveUsers] = useState([]);
+
+const [leaveRequestForUserId, setLeaveRequestForUserId] = useState("");
+const [behalfLeaveUserId, setBehalfLeaveUserId] = useState("");
+const [behalfLeaveStart, setBehalfLeaveStart] = useState("");
+const [behalfLeaveEnd, setBehalfLeaveEnd] = useState("");
+const [behalfLeaveType, setBehalfLeaveType] = useState("Full Day");
+const [behalfLeaveName, setBehalfLeaveName] = useState("Casual Leave");
+const [behalfLeaveReason, setBehalfLeaveReason] = useState("");
+const [behalfLeaves, setBehalfLeaves] = useState([]);
+
 const [attendanceSearch, setAttendanceSearch] = useState("");
 const [attendanceMonth, setAttendanceMonth] = useState(() => {
   const d = new Date();
@@ -202,6 +213,7 @@ const getCurrentMonth = () => {
   return `${year}-${month}`;
 };
 
+const [myBehalfLeaveMonth, setMyBehalfLeaveMonth] = useState(getCurrentMonth());
 const [monthFilter, setMonthFilter] = useState(getCurrentMonth());
 const [attendanceMonthFilter, setAttendanceMonthFilter] = useState(getCurrentMonth());
 const [otMonthFilter, setOtMonthFilter] = useState(getCurrentMonth());
@@ -467,12 +479,86 @@ const openNotification = (n) => {
     window.history.pushState({}, "", "?tab=my-payslip");
   }
 
-  if (n.type === "leave") {
+ /*  if (n.type === "leave") {
     setActiveSidebar("my-leave");
     window.history.pushState({}, "", "?tab=my-leave");
+  } */
+
+    if (n.type === "leave") {
+    setActiveSidebar(isLeader ? "member-leave-panel" : "my-leave");
+    window.history.pushState(
+      {},
+      "",
+      isLeader ? "?tab=member-leave-panel" : "?tab=my-leave"
+    );
   }
 
   setShowNoti(false);
+};
+
+const notifyLeaderForLeaveRequest = async (targetUserId, leaveData) => {
+  try {
+    const users = await ensureUsersLoaded();
+
+    const target =
+      users[targetUserId] ||
+      Object.values(users || {}).find(
+        (u) => u.authUid === targetUserId || u.id === targetUserId
+      ) ||
+      {};
+
+    const targetDept = target.department || target.team || "";
+
+    let leaderIds = [];
+
+    // 1) employee profile has leaderId
+    if (target.leaderId) {
+      leaderIds.push(target.leaderId);
+    }
+
+    // 2) fallback: same department leaders
+    Object.entries(users || {}).forEach(([uid, u]) => {
+      const rolesArr = u.roles || [];
+      const isLeaderUser = u.role === "leader" || rolesArr.includes("leader");
+      const sameDept = targetDept && (u.department || u.team || "") === targetDept;
+
+      if (isLeaderUser && sameDept && uid !== targetUserId) {
+        leaderIds.push(uid);
+      }
+    });
+
+    leaderIds = [...new Set(leaderIds)].filter(Boolean);
+
+    console.log("LEAVE NOTI DEBUG", {
+      targetUserId,
+      target,
+      targetDept,
+      leaderIds,
+    });
+
+    if (leaderIds.length === 0) {
+      notify("⚠️ No leader found for this staff.");
+      return;
+    }
+
+    for (const leaderId of leaderIds) {
+      await addDoc(collection(db, "notifications"), {
+        userId: leaderId,
+        type: "leave",
+        title: "New Leave Request",
+        message: `${target.eid || ""} ${target.name || target.email || ""} requested ${leaveData.leaveName}`,
+        leaveUserId: targetUserId,
+        startDate: leaveData.startDate || "",
+        endDate: leaveData.endDate || "",
+        leaveName: leaveData.leaveName || "",
+        date: serverTimestamp(),
+        read: false,
+      });
+    }
+  } catch (err) {
+    console.error("notifyLeaderForLeaveRequest failed:", err);
+    notify("❌ Leader notification failed: " + err.message);
+  }
 };
 
 // notifications end
@@ -616,6 +702,160 @@ const clearCache = (key) => {
 
   return today >= resignedDate;
 };
+
+const activeUserIds = Object.keys(usersMap || {})
+  .filter((uid) => !isEffectivelyResigned(usersMap[uid]))
+  .sort((a, b) =>
+    (usersMap[a]?.eid || "").localeCompare(usersMap[b]?.eid || "")
+);
+
+// behalf leave request start
+const currentUserProfile =
+  usersMap[user?.uid] ||
+  Object.values(usersMap || {}).find(
+    (u) => u.authUid === user?.uid || u.id === user?.uid || u.email === user?.email
+  ) ||
+  {};
+
+const getUserTeamKey = (u = {}) =>
+  String(
+    u.department ||
+    u.team ||
+    u.staffteam ||
+    u.staffTeam ||
+    u.teamName ||
+    ""
+  ).trim();
+
+const currentEmployeeProfile =
+  employees.find(
+    (e) =>
+      e.id === user?.uid ||
+      e.authUid === user?.uid ||
+      e.email === user?.email
+  ) ||
+  usersMap[user?.uid] ||
+  {};
+
+const currentTeam = getUserTeamKey(currentEmployeeProfile);
+
+const sameTeamUserIds = employees
+  .filter((emp) => {
+    const uid = emp.authUid || emp.id;
+
+    // remove myself
+    if (uid === user?.uid || emp.email === user?.email) return false;
+
+    // remove resigned
+    if (isEffectivelyResigned(emp)) return false;
+
+    // same team / department only
+    return currentTeam && getUserTeamKey(emp) === currentTeam;
+  })
+  .sort((a, b) =>
+    (a.eid || "").localeCompare(b.eid || "", undefined, { numeric: true })
+  )
+  .map((emp) => emp.authUid || emp.id);
+
+const loadBehalfLeaves = async () => {
+  if (!user?.uid) return;
+
+  const q = query(
+    collection(db, "leaves"),
+    where("requestedBy", "==", user.uid)
+  );
+
+  const snap = await getDocs(q);
+
+  const list = snap.docs.map((d) => ({
+    id: d.id,
+    ...d.data(),
+  }));
+
+  list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  setBehalfLeaves(list);
+};
+
+const applyLeaveOnBehalf = async () => {
+  try {
+    if (!behalfLeaveUserId) return notify("Please select staff.");
+    if (!behalfLeaveStart || !behalfLeaveEnd || !behalfLeaveReason) {
+      return notify("Please fill all behalf leave fields.");
+    }
+
+    if (!sameTeamUserIds.includes(behalfLeaveUserId)) {
+      return notify("You can request only for same team members.");
+    }
+
+    const target = usersMap[behalfLeaveUserId] || {};
+    const requester = usersMap[user.uid] || {};
+
+    if (
+      !validateLeaveBalanceBeforeSubmit(
+        behalfLeaveUserId,
+        behalfLeaveName,
+        behalfLeaveType,
+        behalfLeaveStart,
+        behalfLeaveEnd
+      )
+    ) {
+      return;
+    }
+
+    await addDoc(collection(db, "leaves"), {
+      userId: behalfLeaveUserId,
+
+      requestedBy: user.uid,
+      requestedFor: behalfLeaveUserId,
+      requestedByName: requester.name || "",
+      requestedForName: target.name || "",
+      requestedForEid: target.eid || "",
+      requestedTeam: target.team || target.department || "",
+
+      startDate: behalfLeaveStart,
+      endDate: behalfLeaveEnd,
+      leaveType: behalfLeaveType,
+      leaveName: behalfLeaveName,
+      reason: behalfLeaveReason,
+
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    });
+
+    await notifyLeaderForLeaveRequest(behalfLeaveUserId, {
+      leaveName: behalfLeaveName,
+      leaveType: behalfLeaveType,
+      startDate: behalfLeaveStart,
+      endDate: behalfLeaveEnd,
+    });
+
+    notify("✅ Leave request on behalf submitted");
+
+    setBehalfLeaveUserId("");
+    setBehalfLeaveStart("");
+    setBehalfLeaveEnd("");
+    setBehalfLeaveType("Full Day");
+    setBehalfLeaveName("Casual Leave");
+    setBehalfLeaveReason("");
+
+    await loadBehalfLeaves();
+  } catch (err) {
+    console.error(err);
+    notify("❌ Behalf leave submit failed: " + err.message);
+  }
+};
+
+const filteredBehalfLeaves = behalfLeaves.filter((lv) => {
+  if (!myBehalfLeaveMonth) return true;
+
+  return (
+    String(lv.startDate || "").startsWith(myBehalfLeaveMonth) ||
+    String(lv.createdAt || "").startsWith(myBehalfLeaveMonth)
+  );
+});
+
+// behalf leave request end
 
   const filteredEmployees = employees.filter((e) => {
   const q = empSearch.trim().toLowerCase();
@@ -1412,7 +1652,7 @@ clearCache(companyCacheKey(CACHE_KEYS.usersMap));
   // Leave pages search
   const [leaveSearch, setLeaveSearch] = useState("");
 
- const filteredUserIdsForLeave = Object.keys(usersMap)
+ const filteredUserIdsForLeave = activeUserIds
   .filter((uid) => {
     const q = leaveSearch.trim().toLowerCase();
     if (!q) return true;
@@ -1442,6 +1682,7 @@ clearCache(companyCacheKey(CACHE_KEYS.usersMap));
   const [gpsSettingSearch, setGpsSettingSearch] = useState("");
 
   const filteredEmployeeslocation = employees
+  .filter((emp) => !isEffectivelyResigned(emp))
   .filter((emp) => {
     const q = employeeSearch.trim().toLowerCase();
     if (!q) return true;
@@ -1469,6 +1710,7 @@ clearCache(companyCacheKey(CACHE_KEYS.usersMap));
 
 
   const filteredGpsSettingEmployees = employees
+  .filter((emp) => !isEffectivelyResigned(emp))
   .filter((emp) => {
     const q = gpsSettingSearch.trim().toLowerCase();
     if (!q) return true;
@@ -2057,9 +2299,20 @@ useEffect(() => {
 useEffect(() => {
   if (!user || activeSidebar !== "my-leave") return;
 
-  loadLeaves(user.uid);
-  loadOvertime(user.uid);
+   (async () => {
+    await loadEmployees(true);
+    await ensureUsersLoaded();
+    await loadLeaves(user.uid);
+    await loadBehalfLeaves();
+    await loadLeaveBalances();
+  })();
 }, [user, activeSidebar, companyId]);
+
+useEffect(() => {
+  if (!user || activeSidebar !== "my-ot") return;
+
+  loadOvertime(user.uid);
+}, [user, activeSidebar, myOtMonth, companyId]);
 
 useEffect(() => {
   if (!user || activeSidebar !== "my-panel") return;
@@ -2170,6 +2423,16 @@ useEffect(() => {
     await ensureUsersLoaded();
     await loadLeaveBalances();
     await loadAllLeaves();
+  })();
+}, [user, isAdmin, activeSidebar, companyId]);
+
+useEffect(() => {
+  if (!user || !isAdmin || activeSidebar !== "admin-leave-anniversary") return;
+
+  (async () => {
+    await loadEmployees(true);
+    await ensureUsersLoaded();
+    await loadLeaveBalances(currentYear);
   })();
 }, [user, isAdmin, activeSidebar, companyId]);
 
@@ -2395,6 +2658,19 @@ useEffect(() => {
 
 
   // PaySlip  Admin
+    const getEnglishNameOnly = (name = "") => {
+    return String(name)
+      .replace(/[\u3040-\u30ff\u3400-\u9fff]+.*$/g, "")
+      .trim();
+  };
+
+  const safeFileName = (text = "") => {
+    return String(text)
+      .replace(/[\\/:*?"<>|]/g, "")
+      .replace(/\s+/g, "_")
+      .trim();
+  };
+
   const exportPayslip = (p) => {
   const doc = new jsPDF("p", "mm", "a4");
   doc.setFontSize(16);
@@ -2404,7 +2680,10 @@ useEffect(() => {
   doc.text("Payslip", 105, 20, { align: "center" });
 
   doc.setFontSize(10);
-  doc.text(`Name: ${p.name || ""}`, 14, 30);
+  const payName = getEnglishNameOnly(p.name || "");
+  const payMonth = String(p.month || "").replace("For ", "").slice(0, 7);
+  doc.text(`Name: ${payName}`, 14, 30);
+
   doc.text(`Team: ${p.staffteam || ""}`, 14, 36);
   doc.text(`Position: ${p.staffposition || ""}`, 14, 42);
   doc.text(`Date: ${p.createdAt?.slice(0,10)}`, 150, 30);
@@ -2545,7 +2824,7 @@ useEffect(() => {
   doc.text("Payment Date: " + (p.createdAt?.slice(0,10) || ""), 14, doc.lastAutoTable.finalY + 20);
   doc.text("Signature: ____________________", 150, doc.lastAutoTable.finalY + 20);
 
-  doc.save(`${p.name || "payslip"}.pdf`);
+  doc.save(`${safeFileName(payName || "payslip")}_${payMonth || "month"}.pdf`);
   };
 
 
@@ -3710,7 +3989,7 @@ const monthAttendance = (allAttendance || []).filter(
     shouldShowRecordForUser(a.userId, a.date)
 );
 
-const monthlySummaryByUser = Object.keys(usersMap || {})
+const monthlySummaryByUser = activeUserIds
   .map((uid) => {
     const rows = monthAttendance.filter((a) => a.userId === uid);
 
@@ -4286,19 +4565,499 @@ const leaderUpdateAttendanceTime = async () => {
     setLeaveBalances(map);
   };
 
+   // auto adjust leave accroding to DOE start
+    
+    // ======================================================
+  // ANNUAL LEAVE ANNIVERSARY
+  // ======================================================
+  
+  const normalizeDateStr = (value) => {
+    if (!value) return "";
+  
+    return String(value)
+      .replaceAll("/", "-")
+      .slice(0, 10);
+  };
+  
+  const getAnniversaryDate = (doe, year) => {
+    const normalizedDoe = normalizeDateStr(doe);
+  
+    if (!normalizedDoe) return "";
+  
+    const parts = normalizedDoe.split("-");
+  
+    if (parts.length !== 3) return "";
+  
+    const month = parts[1];
+    const day = parts[2];
+  
+    return `${year}-${month}-${day}`;
+  };
+  
+  const getDoeValue = (emp = {}) => {
+    return normalizeDateStr(
+      emp.doe ||
+      emp.joinDate ||
+      emp.dateOfEmployment ||
+      ""
+    );
+  };
+  
+  const hasReachedAnniversary = (emp, year = currentYear) => {
+    const doe = getDoeValue(emp);
+  
+    if (!doe) return false;
+  
+    const anniversaryDate = getAnniversaryDate(doe, year);
+    const today = getTodayDateYangon();
+  
+    return Boolean(anniversaryDate && today >= anniversaryDate);
+  };
+  
+  
+  // ======================================================
+  // ANNIVERSARY TABLE ROWS
+  // ======================================================
+  
+  const getAnnualLeaveAnniversaryRows = () => {
+    return (employees || [])
+      .filter((emp) => !isEffectivelyResigned(emp))
+      .map((emp) => {
+        const uid = emp.authUid || emp.id;
+  
+        const doe = getDoeValue(emp);
+  
+        const anniversaryDate = doe
+          ? getAnniversaryDate(doe, currentYear)
+          : "";
+  
+        const balanceDocument = leaveBalances?.[uid] || {};
+        const balances = balanceDocument.balances || {};
+  
+        const annual = balances["Annual Leave"] || {};
+        const casual = balances["Casual Leave"] || {};
+  
+        const annualBase = Number(annual.base || 0);
+        const annualCarry = Number(annual.carry || 0);
+        const annualTaken = Number(annual.taken || 0);
+  
+        const annualTotal = Math.min(
+          annualBase + annualCarry,
+          20
+        );
+  
+        const annualBalance = Math.max(
+          0,
+          annualTotal - annualTaken
+        );
+  
+        const casualAllowance = 6;
+  
+        const casualTaken = Math.min(
+          Number(casual.taken || 0),
+          casualAllowance
+        );
+  
+        const casualBalance = Math.max(
+          0,
+          casualAllowance - casualTaken
+        );
+  
+        const reached = anniversaryDate
+          ? getTodayDateYangon() >= anniversaryDate
+          : false;
+  
+        const adjusted =
+          Number(balanceDocument.annualAnniversaryYear) ===
+          Number(currentYear);
+  
+        let status = "Waiting";
+  
+        if (adjusted) {
+          status = "Adjusted";
+        } else if (reached) {
+          status = "Reached";
+        }
+  
+        return {
+          uid,
+  
+          eid:
+            emp.eid ||
+            emp.employeeCode ||
+            "",
+  
+          name:
+            emp.name ||
+            emp.employeeName ||
+            "",
+  
+          department:
+            emp.department ||
+            emp.team ||
+            "",
+  
+          doe,
+          anniversaryDate,
+  
+          reached,
+          adjusted,
+          status,
+  
+          adjustedDate:
+            balanceDocument.annualAnniversaryDate || "",
+  
+          annualBase,
+          annualCarry,
+          annualTaken,
+          annualTotal,
+          annualBalance,
+  
+          casualAllowance,
+          casualTaken,
+          casualBalance,
+        };
+      })
+      .sort((a, b) => {
+        const dateA = a.anniversaryDate || "9999-12-31";
+        const dateB = b.anniversaryDate || "9999-12-31";
+  
+        return dateA.localeCompare(dateB);
+      });
+  };
+  
+  
+  // ======================================================
+  // AUTO ADJUST SELECTED STAFF
+  // uidList can contain one UID or many UIDs
+  // ======================================================
+  
+  const autoAdjustLeaveBalances = async (
+    uidList = selectedLeaveUsers
+  ) => {
+    try {
+      const selectedIds = Array.isArray(uidList)
+        ? [...new Set(uidList.filter(Boolean))]
+        : [];
+  
+      if (selectedIds.length === 0) {
+        return notify("Please select staff first.");
+      }
+  
+      const confirmed = window.confirm(
+        `Auto adjust leave balances for ${selectedIds.length} selected staff?`
+      );
+  
+      if (!confirmed) return;
+  
+      const year = currentYear;
+      const previousYear = year - 1;
+      const today = getTodayDateYangon();
+  
+      // Always load latest employees
+      const freshEmployees = await loadEmployees(true);
+  
+      const targetEmployees = (freshEmployees || []).filter(
+        (emp) => {
+          const uid = emp.authUid || emp.id;
+  
+          return (
+            selectedIds.includes(uid) &&
+            !isEffectivelyResigned(emp)
+          );
+        }
+      );
+  
+      if (targetEmployees.length === 0) {
+        return notify("No active selected staff found.");
+      }
+  
+      // Load previous year's balances
+      const previousSnapshot = await getDocs(
+        query(
+          collection(db, "leaveBalances"),
+          where("year", "==", previousYear)
+        )
+      );
+  
+      const previousBalanceMap = {};
+  
+      previousSnapshot.forEach((documentSnapshot) => {
+        const data = documentSnapshot.data();
+  
+        if (data.userId) {
+          previousBalanceMap[data.userId] = data;
+        }
+      });
+  
+      const batch = writeBatch(db);
+  
+      let adjustedCount = 0;
+      let alreadyAdjustedCount = 0;
+      let waitingCount = 0;
+      let noDoeCount = 0;
+  
+      for (const emp of targetEmployees) {
+        const uid = emp.authUid || emp.id;
+        const doe = getDoeValue(emp);
+  
+        if (!doe) {
+          noDoeCount += 1;
+          continue;
+        }
+  
+        if (!hasReachedAnniversary(emp, year)) {
+          waitingCount += 1;
+          continue;
+        }
+  
+        const currentBalanceRef = doc(
+          db,
+          "leaveBalances",
+          `${uid}_${year}`
+        );
+  
+        // Read latest Firestore data to prevent duplicate updates
+        const currentBalanceSnapshot = await getDoc(
+          currentBalanceRef
+        );
+  
+        const currentDocument = currentBalanceSnapshot.exists()
+          ? currentBalanceSnapshot.data()
+          : {};
+  
+        // Prevent double adjustment in same year
+        if (
+          Number(currentDocument.annualAnniversaryYear) ===
+          Number(year)
+        ) {
+          alreadyAdjustedCount += 1;
+          continue;
+        }
+  
+        const currentBalances =
+          currentDocument.balances || {};
+  
+        const previousDocument =
+          previousBalanceMap[uid] || {};
+  
+        const previousBalances =
+          previousDocument.balances || {};
+  
+        const currentAnnual =
+          currentBalances["Annual Leave"] || {};
+  
+        const currentCasual =
+          currentBalances["Casual Leave"] || {};
+  
+             const previousAnnual =
+        previousBalances["Annual Leave"] || {};
+
+      // Current year existing Annual Leave data
+      const currentAnnualCarry = Number(
+        currentAnnual.carry || 0
+      );
+
+      // Previous year Annual Leave data
+      const previousAnnualBase = Number(
+        previousAnnual.base || 0
+      );
+
+      const previousAnnualCarry = Number(
+        previousAnnual.carry || 0
+      );
+
+      const previousAnnualTaken = Number(
+        previousAnnual.taken || 0
+      );
+
+      const previousAnnualAllowance = Math.min(
+        previousAnnualBase + previousAnnualCarry,
+        20
+      );
+
+      const previousAnnualRemaining = Math.max(
+        0,
+        previousAnnualAllowance - previousAnnualTaken
+      );
+
+      // Keep current carry when it already exists.
+      // Otherwise calculate from previous year.
+      const calculatedCarryFromPreviousYear = Math.min(
+        previousAnnualRemaining,
+        10
+      );
+
+      const newAnnualCarry = Math.min(
+        currentAnnualCarry > 0
+          ? currentAnnualCarry
+          : calculatedCarryFromPreviousYear,
+        10
+      );
+
+            const newAnnualBase = 10;
+
+      const newAnnualTotal = Math.min(
+        newAnnualBase + newAnnualCarry,
+        20
+      );
+
+      const currentAnnualTaken = Number(
+        currentAnnual.taken || 0
+      );
+
+      const rawCasualTaken = Number(
+        currentCasual.taken || 0
+      );
+
+      const casualOverflow = Math.max(
+        0,
+        rawCasualTaken - 6
+      );
+
+      const newCasualTaken = Math.min(
+        rawCasualTaken,
+        6
+      );
+
+      const newAnnualTaken =
+        currentAnnualTaken + casualOverflow;
+
+      const newAnnualBalance = Math.max(
+        0,
+        newAnnualTotal - newAnnualTaken
+      );
+
+          const updatedBalances = {
+        ...currentBalances,
+
+         "Annual Leave": {
+          ...currentAnnual,
+          base: newAnnualBase,
+          carry: newAnnualCarry,
+          taken: newAnnualTaken,
+          total: Math.min(newAnnualBase + newAnnualCarry, 20),
+        },
+
+        "Casual Leave": {
+          ...currentCasual,
+          base: 6,
+          carry: 0,
+          taken: newCasualTaken,
+          total: 6,
+        },
+      };
+  
+        batch.set(
+          currentBalanceRef,
+          {
+            userId: uid,
+            year,
+  
+            balances: updatedBalances,
+  
+            annualAnniversaryYear: year,
+            annualAnniversaryDate: today,
+            annualAnniversaryAdjustedAt:
+              new Date().toISOString(),
+            annualAnniversaryAdjustedBy:
+              user?.uid || null,
+  
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+  
+        adjustedCount += 1;
+      }
+  
+      if (adjustedCount > 0) {
+        await batch.commit();
+      }
+  
+      // Reload immediately so Status becomes Adjusted
+      await loadLeaveBalances(year);
+  
+      setSelectedLeaveUsers([]);
+  
+      if (adjustedCount > 0) {
+        notify(
+          `✅ Adjusted: ${adjustedCount}, Already adjusted: ${alreadyAdjustedCount}, Waiting: ${waitingCount}, No DOE: ${noDoeCount}`
+        );
+      } else if (alreadyAdjustedCount > 0) {
+        notify(
+          "This staff has already been adjusted for this year."
+        );
+      } else if (waitingCount > 0) {
+        notify(
+          "DOE anniversary has not been reached yet."
+        );
+      } else if (noDoeCount > 0) {
+        notify(
+          "DOE is not registered for this staff."
+        );
+      }
+    } catch (err) {
+      console.error(
+        "autoAdjustLeaveBalances error:",
+        err
+      );
+  
+      notify(
+        "❌ Auto adjustment failed: " +
+        (err?.message || "Unknown error")
+      );
+    }
+  };
+  
+  
+  // ======================================================
+  // SINGLE STAFF AUTO ADD BUTTON
+  // No React state waiting problem
+  // ======================================================
+  
+  const autoAdjustOneStaffAnnualLeave = async (uid) => {
+    await autoAdjustLeaveBalances([uid]);
+  };
+  
+   // auto adjust leave accroding to DOE end //
 
   const summaryLeaveTypes = ["Casual Leave", "Annual Leave", "Medical Leave","WithoutPay Leave", "Maternity Leave",];
   const saveLeaveBalance = async (uid) => {
     const data = leaveBalances[uid];
     if (!data) return;
 
+    const balances = { ...(data.balances || {}) };
+  
+      const casual = { ...(balances["Casual Leave"] || {}) };
+      const annual = { ...(balances["Annual Leave"] || {}) };
+  
+      const casualMax = Number(casual.base || casual.total || 6);
+      const casualTaken = Number(casual.taken || 0);
+  
+      const overflow = Math.max(0, casualTaken - casualMax);
+  
+      // ✅ Casual cannot exceed 6
+      casual.base = casualMax;
+      casual.carry = 0;
+      casual.total = casualMax;
+      casual.taken = Math.min(casualTaken, casualMax);
+  
+      // ✅ Add overflow to Annual taken
+      if (overflow > 0) {
+        annual.taken = Number(annual.taken || 0) + overflow;
+      }
+  
+      balances["Casual Leave"] = casual;
+      balances["Annual Leave"] = annual;
+
     await setDoc(
       doc(db, "leaveBalances", `${uid}_${currentYear}`),
       {
         userId: uid,
         year: currentYear,
-        balances: data.balances,
-        updatedAt: new Date().toISOString()
+        balances,
+        updatedAt: new Date().toISOString(),
       },
       { merge: true }
     );
@@ -4684,8 +5443,127 @@ const selectedDayIsAbsentFull =
    };
 
   /* ---------------- leave & overtime (staff) ---------------- */
+  const getLeaveAllowanceTakenBalance = (uid, type) => {
+  const balances = leaveBalances?.[uid]?.balances || {};
+  const b = balances[type] || {};
+
+  const base = Number(b.base || 0);
+  const storedCarry = Number(b.carry || 0);
+  const takenRaw = Number(b.taken || 0);
+
+  let allowance = 0;
+  let taken = takenRaw;
+  let balance = 0;
+  let carry = 0;
+
+  // Annual Leave:
+  // Always calculate from base + carry.
+  // Do not trust old/stale "total" field.
+  if (type === "Annual Leave") {
+    carry = Math.min(Math.max(0, storedCarry), 10);
+    allowance = Math.min(base + carry, 20);
+    taken = Math.max(0, takenRaw);
+    balance = Math.max(0, allowance - taken);
+
+    return {
+      base,
+      carry,
+      allowance,
+      taken,
+      balance,
+      takenRaw,
+    };
+  }
+
+  // Casual Leave:
+  // Maximum allowance is 6 and no carry.
+  if (type === "Casual Leave") {
+    allowance = Number(base || 6);
+    allowance = Math.min(Math.max(0, allowance), 6);
+
+    taken = Math.min(
+      Math.max(0, takenRaw),
+      allowance
+    );
+
+    balance = Math.max(0, allowance - taken);
+
+    return {
+      base: allowance,
+      carry: 0,
+      allowance,
+      taken,
+      balance,
+      takenRaw,
+    };
+  }
+
+  // Other leave types:
+  // No carry.
+  allowance = Math.max(0, base);
+  taken = Math.max(0, takenRaw);
+  balance = Math.max(0, allowance - taken);
+
+  return {
+    base,
+    carry: 0,
+    allowance,
+    taken,
+    balance,
+    takenRaw,
+  };
+};
+  
+    const isCasualLeaveUsedAll = (uid) => {
+      const { balance } = getLeaveAllowanceTakenBalance(uid, "Casual Leave");
+      return balance <= 0;
+    };
+  
+    const validateLeaveBalanceBeforeSubmit = (uid, lName, lType, start, end) => {
+      if (lName !== "Casual Leave") return true;
+  
+      const units = calcLeaveUnits({
+        startDate: start,
+        endDate: end,
+        leaveType: lType,
+      });
+  
+      const { balance } = getLeaveAllowanceTakenBalance(uid, "Casual Leave");
+  
+      if (balance <= 0) {
+        notify("❌ Casual Leave balance is already 0. You cannot submit Casual Leave.");
+        return false;
+      }
+  
+      if (units > balance) {
+        notify(`❌ Casual Leave balance is only ${balance} day(s).`);
+        return false;
+      }
+  
+      return true;
+    };
+  
+    useEffect(() => {
+    if (user?.uid && leaveName === "Casual Leave" && isCasualLeaveUsedAll(user.uid)) {
+      setLeaveName("Annual Leave");
+    }
+  }, [user?.uid, leaveBalances, leaveName]);
+  
+  useEffect(() => {
+    if (
+      behalfLeaveUserId &&
+      behalfLeaveName === "Casual Leave" &&
+      isCasualLeaveUsedAll(behalfLeaveUserId)
+    ) {
+      setBehalfLeaveName("Annual Leave");
+    }
+  }, [behalfLeaveUserId, leaveBalances, behalfLeaveName]);
+
   const applyLeave = async () => {
     if (!leaveStart || !leaveEnd || !leaveReason) return notify("Please fill leave start, end and reason.");
+    if (!validateLeaveBalanceBeforeSubmit(user.uid, leaveName, leaveType, leaveStart, leaveEnd)) {
+      return;
+    }
     await addDoc(collection(db, "leaves"), {
       companyId,
       userId: user.uid,
@@ -4706,6 +5584,13 @@ const selectedDayIsAbsentFull =
       adminActionAt: null,
 
       createdAt: new Date().toISOString(),
+    });
+
+     await notifyLeaderForLeaveRequest(user.uid, {
+      leaveName,
+      leaveType,
+      startDate: leaveStart,
+      endDate: leaveEnd,
     });
 
     setLeaveStart(""); setLeaveEnd(""); setLeaveReason("");
@@ -5022,13 +5907,18 @@ const deleteLeaveRequest = async (id, leaveRow) => {
 
     const status = String(leaveRow?.status || "pending").toLowerCase();
     const isOwner = leaveRow?.userId === user?.uid;
+    const isRequester = leaveRow?.requestedBy === user?.uid;
+    const canStaffDeletePending = status === "pending" && !isAdmin && (isOwner || isRequester);
 
     // STAFF: pending leave only delete leave document
-    if (isOwner && status === "pending" && !isAdmin) {
+    if (canStaffDeletePending) {
       await deleteDoc(leaveRef);
 
+      setLeaves((prev) => prev.filter((x) => x.id !== id));
+      setBehalfLeaves((prev) => prev.filter((x) => x.id !== id));
+
       notify("🗑 Leave request deleted");
-      await loadLeaves(user.uid);
+
       return;
     }
 
@@ -5080,18 +5970,36 @@ const deleteLeaveRequest = async (id, leaveRow) => {
       tx.delete(leaveRef);
     });
 
+     setLeaves((prev) => {
+      const next = prev.filter((x) => x.id !== id);
+      console.log("MY LEAVES REMOVE", prev.length, next.length);
+      return next;
+    });
+
+    setBehalfLeaves((prev) => {
+      const next = prev.filter((x) => x.id !== id);
+      console.log("BEHALF REMOVE", prev.length, next.length);
+      return next;
+    });
+
+    setAllLeaves((prev) => prev.filter((x) => x.id !== id));
+
     notify("🗑 Leave request deleted");
 
     if (isAdmin) {
       await loadAllLeaves();
       await loadLeaveBalances(yearForReload);
     } else {
-      await loadLeaves(user.uid);
+      await Promise.all([
+        loadLeaves(user.uid),
+        loadBehalfLeaves(),
+        loadLeaveBalances(yearForReload),
+      ]);
     }
-  } catch (err) {
-    console.error(err);
-    notify("❌ Delete failed: " + err.message);
-  }
+    } catch (err) {
+      console.error(err);
+      notify("❌ Delete failed: " + err.message);
+    }
 };
 
 
@@ -5168,7 +6076,9 @@ const saveMyLeaveEdit = async () => {
     notify("✅ Leave request updated!");
     setEditingMyLeave(null);
 
-    loadLeaves(user.uid); // reload my leave list
+    await loadLeaves(user.uid);
+    await loadBehalfLeaves();
+    
     if (isAdmin) loadAllLeaves(); // refresh admin if admin user
   } catch (err) {
     console.error(err);
@@ -5267,7 +6177,7 @@ const getLeaveTaken = (uid, leaveName, year = currentYear) => {
 /* All Staff Leave Summary */
 const [leaveSummarySearch, setLeaveSummarySearch] = useState("");
 
-const leaveSummaryUids = Object.keys(usersMap || {})
+const leaveSummaryUids = activeUserIds
   .filter((uid) => {
     const q = leaveSummarySearch.trim().toLowerCase();
     if (!q) return true;
@@ -6011,7 +6921,10 @@ useEffect(() => {
           <span className="icon">🕒</span>{!desktopSidebarCollapsed && <span className="nav-text">My Attendance</span>}
         </a>
         <a className="nav-item" href="?tab=my-leave" onClick={(e) => handleTabClick(e, "my-leave")}>
-          <span className="icon">📝</span>{!desktopSidebarCollapsed && <span className="nav-text"> My Leave / OT</span>}
+          <span className="icon">📝</span>{!desktopSidebarCollapsed && <span className="nav-text">Leave Request</span>}
+        </a>
+        <a className="nav-item" href="?tab=my-ot" onClick={(e) => handleTabClick(e, "my-ot")}>
+          <span className="icon">📝</span>{!desktopSidebarCollapsed && <span className="nav-text">My Overtime</span>}
         </a>
         <a className="nav-item" href="?tab=my-po" onClick={(e) => handleTabClick(e, "my-po")}>
           <span className="icon">📝</span>{!desktopSidebarCollapsed && <span className="nav-text"> My P/O Reports</span>}
@@ -6126,6 +7039,9 @@ useEffect(() => {
             </a>
             <a className="nav-item" href="?tab=admin-leave-summary" onClick={(e) => handleTabClick(e, "admin-leave-summary")}>
               <span className="icon">📝</span> {!desktopSidebarCollapsed && <span className="nav-text">All Staff Leave Summary</span>}
+            </a>
+            <a className="nav-item" href="?tab=admin-leave-anniversary" onClick={(e) => handleTabClick(e, "admin-leave-anniversary")}>
+                <span className="icon">📅</span>{!desktopSidebarCollapsed && (<span className="nav-text">Annual Leave Anniversary</span>)}
             </a>
             <a className="nav-item" href="?tab=admin-po" onClick={(e) => handleTabClick(e, "admin-po")}>
               <span className="icon">💼</span> {!desktopSidebarCollapsed && <span className="nav-text">All Staff P/O Reports</span>}
@@ -6709,7 +7625,7 @@ useEffect(() => {
           </section>
        )}
 
-        {/* My Leave & OT */}
+        {/* My Leave request*/}
         {activeSidebar === "my-leave" && (
           <section className="card">
             <h2>Leave Request</h2>
@@ -6736,7 +7652,9 @@ useEffect(() => {
           <div className="form-group">
             <label>Leave Name</label>
             <select value={leaveName} onChange={(e) => setLeaveName(e.target.value)}>
-              <option>Casual Leave</option>
+              <option value="Casual Leave" disabled={isCasualLeaveUsedAll(user?.uid)}>
+                Casual Leave {isCasualLeaveUsedAll(user?.uid) ? "(Used All)" : ""}
+              </option>
               <option>Annual Leave</option>
               <option>WithoutPay Leave</option>
               <option>Medical Leave</option>
@@ -6817,7 +7735,7 @@ useEffect(() => {
                       </button>
                       <button
                           className="btn small red"
-                          onClick={() => deleteLeaveRequest(lv.id)}
+                          onClick={() => deleteLeaveRequest(lv.id, lv)}
                         >
                           🗑️
                         </button>
@@ -6829,6 +7747,199 @@ useEffect(() => {
                 )}
               </tbody>
             </table>
+
+            <h2 style={{ marginTop: 25 }}>Leave Request on Behalf</h2>
+
+            <div
+              className="form"
+              style={{
+                display: "flex",
+                gap: 16,
+                flexWrap: "wrap",
+                alignItems: "flex-start",
+              }}
+            >
+              <div className="form-group">
+                <label>Staff</label>
+                <select
+                  value={behalfLeaveUserId}
+                  onChange={(e) => setBehalfLeaveUserId(e.target.value)}
+                >
+                  <option value="">-- Select same team member --</option>
+                  {sameTeamUserIds.map((uid) => {
+                    const emp =
+                      employees.find((e) => (e.authUid || e.id) === uid) ||
+                      usersMap[uid] ||
+                      {};
+
+                    return (
+                      <option key={uid} value={uid}>
+                        {(emp.eid || "-")} - {emp.name || emp.employeeName || emp.email}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Start Date</label>
+                <input
+                  type="date"
+                  value={behalfLeaveStart}
+                  onChange={(e) => setBehalfLeaveStart(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>End Date</label>
+                <input
+                  type="date"
+                  value={behalfLeaveEnd}
+                  onChange={(e) => setBehalfLeaveEnd(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Leave Type</label>
+                <select
+                  value={behalfLeaveType}
+                  onChange={(e) => setBehalfLeaveType(e.target.value)}
+                >
+                  <option>Full Day</option>
+                  <option>Morning Half</option>
+                  <option>Evening Half</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Leave Name</label>
+                <select
+                  value={behalfLeaveName}
+                  onChange={(e) => setBehalfLeaveName(e.target.value)}
+                >
+                  <option value="Casual Leave" disabled={isCasualLeaveUsedAll(behalfLeaveUserId)}>
+                    Casual Leave {isCasualLeaveUsedAll(behalfLeaveUserId) ? "(Used All)" : ""}
+                  </option>
+                  <option>Annual Leave</option>
+                  <option>WithoutPay Leave</option>
+                  <option>Medical Leave</option>
+                  <option>Maternity Leave</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Reason</label>
+                <input
+                  type="text"
+                  placeholder="Reason"
+                  value={behalfLeaveReason}
+                  onChange={(e) => setBehalfLeaveReason(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group" style={{ alignSelf: "flex-end" }}>
+                <button className="btn submit" onClick={applyLeaveOnBehalf}>
+                  Submit Behalf Leave
+                </button>
+              </div>
+            </div>
+
+            <h3 style={{ marginTop: 25 }}>My Team Member Leave request</h3>
+
+            <div className="myleave_table">
+              <input
+                type="month"
+                value={myBehalfLeaveMonth}
+                onChange={(e) => setMyBehalfLeaveMonth(e.target.value)}
+              />
+              <button className="btn" onClick={() => setMyBehalfLeaveMonth("")}>
+                Clear
+              </button>
+            </div>
+
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Staff</th>
+                  <th>Apply Date</th>
+                  <th>LeaveStart</th>
+                  <th>LeaveEnd</th>
+                  <th>LeaveType</th>
+                  <th>LeaveName</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {filteredBehalfLeaves.length === 0 ? (
+                  <tr>
+                    <td colSpan="9" style={{ textAlign: "center", padding: "20px" }}>
+                      No behalf leave requests.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredBehalfLeaves.map((lv) => (
+                    <tr key={lv.id}>
+                      <td>
+                        {lv.requestedForEid || displayEmpId(lv.userId)} -{" "}
+                        {lv.requestedForName || displayUser(lv.userId)}
+                      </td>
+                      <td>{lv.createdAt?.split("T")[0]}</td>
+                      <td>{lv.startDate}</td>
+                      <td>{lv.endDate}</td>
+                      <td>{lv.leaveType}</td>
+                      <td>{lv.leaveName}</td>
+                      <td>{lv.reason}</td>
+                      <td>{colorStatus(lv.status)}</td>
+                      <td>
+                      {(() => {
+                        const isPending =
+                          String(lv.status || "pending").toLowerCase() === "pending";
+
+                        return (
+                          <div style={{ display: "flex", gap: 10 }}>
+                            <button
+                              className="btn small"
+                              disabled={!isPending}
+                              style={{
+                                opacity: !isPending ? 0.6 : 1,
+                                cursor: !isPending ? "not-allowed" : "pointer",
+                                color: "#000",
+                              }}
+                              onClick={() => {
+                                if (!isPending) return;
+                                openLeaveEditModal(lv);
+                              }}
+                            >
+                              ✏ Edit
+                            </button>
+
+                            <button
+                              className="btn small red"
+                              disabled={!isPending}
+                              style={{
+                                opacity: !isPending ? 0.6 : 1,
+                                cursor: !isPending ? "not-allowed" : "pointer",
+                              }}
+                              onClick={() => {
+                                if (!isPending) return;
+                                deleteLeaveRequest(lv.id, lv);
+                              }}
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+
             {editingMyLeave && (
               <div className="modal-overlay" onClick={() => setEditingMyLeave(null)}>
                 <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -6918,6 +8029,11 @@ useEffect(() => {
 
             </table>
 
+                </section>
+      )}
+
+      {activeSidebar === "my-ot" && (
+        <section className="card">
             
             <h2 style={{marginTop:20}}>Overtime Request</h2>
             <div className="form" style={{display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start"}}>
@@ -8137,89 +9253,6 @@ useEffect(() => {
           <section className="card">
           <h2>Attendance Overview (Calendar)</h2>
 
-            <div className="card" style={{ marginBottom: 16 }}>
-            <h3>Add Leave for Staff</h3>
-
-            <div className="form" style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <div className="form-group">
-            <label>Staff</label>
-            <select
-            value={overviewLeaveUserId}
-            onChange={(e) => setOverviewLeaveUserId(e.target.value)}
-            >
-            <option value="">Select staff</option>
-            {Object.values(usersMap)
-            .sort((a, b) => (a.eid || "").localeCompare(b.eid || ""))
-            .map((u) => (
-              <option key={u.id} value={u.id}>
-                {(u.eid || "-")} - {u.name || u.email}
-              </option>
-            ))}
-            </select>
-            </div>
-
-            <div className="form-group">
-            <label>Start Date</label>
-            <input
-            type="date"
-            value={overviewLeaveStart}
-            onChange={(e) => setOverviewLeaveStart(e.target.value)}
-            />
-            </div>
-
-            <div className="form-group">
-            <label>End Date</label>
-            <input
-            type="date"
-            value={overviewLeaveEnd}
-            onChange={(e) => setOverviewLeaveEnd(e.target.value)}
-            />
-            </div>
-
-            <div className="form-group">
-            <label>Leave Type</label>
-            <select
-            value={overviewLeaveType}
-            onChange={(e) => setOverviewLeaveType(e.target.value)}
-            >
-            <option>Full Day</option>
-            <option>Morning Half</option>
-            <option>Evening Half</option>
-            </select>
-            </div>
-
-            <div className="form-group">
-            <label>Leave Name</label>
-            <select
-            value={overviewLeaveName}
-            onChange={(e) => setOverviewLeaveName(e.target.value)}
-            >
-            <option>Casual Leave</option>
-            <option>Annual Leave</option>
-            <option>Medical Leave</option>
-            <option>WithoutPay Leave</option>
-            <option>Maternity Leave</option>
-            </select>
-            </div>
-
-            <div className="form-group" style={{ minWidth: 220 }}>
-            <label>Reason</label>
-            <input
-            type="text"
-            value={overviewLeaveReason}
-            onChange={(e) => setOverviewLeaveReason(e.target.value)}
-            placeholder="Reason"
-            />
-            </div>
-
-            <div className="form-group" style={{ alignSelf: "flex-end" }}>
-            <button className="btn submit" onClick={adminCreateLeaveForStaff}>
-            Add Leave
-            </button>
-            </div>
-            </div>
-            </div>
-
           <div className="att_overview">
             <div className="att_overview_flex w18">
               <label style={{ fontWeight: 600 }}>Month:</label>
@@ -8939,14 +9972,33 @@ useEffect(() => {
           const manualTaken = getBal(uid, t.key, "taken");
           const computedTaken = getLeaveTaken(uid, t.key);
 
-          const taken =
+          let taken =
             manualTaken !== "" &&
             manualTaken !== null &&
             manualTaken !== undefined
               ? Number(manualTaken)
               : Number(computedTaken);
 
-          const balance = allowance - taken;
+          // ✅ Casual overflow
+          const casualRawTaken = Number(
+            leaveBalances?.[uid]?.balances?.["Casual Leave"]?.taken || 0
+          );
+          const casualMax = Number(
+            leaveBalances?.[uid]?.balances?.["Casual Leave"]?.base ||
+            leaveBalances?.[uid]?.balances?.["Casual Leave"]?.total ||
+            6
+          );
+          const casualOverflow = Math.max(0, casualRawTaken - casualMax);
+
+          if (t.key === "Casual Leave") {
+            taken = Math.min(taken, casualMax);
+          }
+
+          if (t.key === "Annual Leave") {
+            taken = taken + casualOverflow;
+          }
+
+          const balance = Math.max(0, allowance - taken);
 
           return (
             <div
@@ -9008,8 +10060,19 @@ useEffect(() => {
 
                 <input
                   type="number"
+                  min="0"
+                  max={t.key === "Casual Leave" ? Number(base || 6) : undefined}
                   value={taken}
-                  onChange={(e) => setValue(t.key, "taken", e.target.value)}
+                  onChange={(e) => {
+                    let value = Number(e.target.value || 0);
+
+                    if (t.key === "Casual Leave") {
+                      const maxCasual = Number(base || 6);
+                      value = Math.min(value, maxCasual);
+                    }
+
+                    setValue(t.key, "taken", value);
+                  }}
                   placeholder="Taken"
                   style={{ width: 55 }}
                 />
@@ -9142,20 +10205,11 @@ useEffect(() => {
                   const selectedType = leaveSelections[uid] || "Casual Leave";
 
                   // ✅ Allowance from leaveBalances (carry only for Annual Leave)
-                  const base = leaveBalances?.[uid]?.balances?.[selectedType]?.base ?? 0;
-                  const carry =
-                    selectedType === "Annual Leave"
-                      ? (leaveBalances?.[uid]?.balances?.[selectedType]?.carry ?? 0)
-                      : 0;
+                  const values = getLeaveAllowanceTakenBalance(uid, selectedType);
 
-                  const allowance = Number(base) + Number(carry);
-
-                  // ✅ Taken from leaveBalances (manual admin edit)
-                  const taken = Number(
-                    leaveBalances?.[uid]?.balances?.[selectedType]?.taken ?? 0
-                  );
-
-                  const balance = Math.max(0, allowance - taken);
+                  const allowance = values.allowance;
+                  const taken = values.taken;
+                  const balance = values.balance;
 
                   return (
                     <tr key={uid}>
@@ -9730,7 +10784,164 @@ useEffect(() => {
       <button className="btn blue" onClick={exportLeaveBalance}>  Export Leave Balance</button>
     </div>
   </section>
-)}
+)}  
+
+  {isAdmin &&
+  activeSidebar === "admin-leave-anniversary" && (
+    <section className="card">
+      <h2>Annual Leave Anniversary</h2>
+
+      <p>
+        Annual Leave adds 10 days after the DOE anniversary
+        is reached. Annual carry is limited to 10 days, and
+        total Annual Leave allowance cannot exceed 20 days.
+        Casual Leave allowance is 6 days and cannot carry.
+      </p>
+
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            {/* <th>Department</th> */}
+            <th>DOE</th>
+            <th>This Year Anniversary</th>
+            <th>Status</th>
+
+            <th>Annual Allowance</th>
+            {/* <th>Annual Carry</th> */}
+            <th>Annual Taken</th>
+            <th>Annual Balance</th>
+
+            <th>Casual Allowance</th>
+            <th>Casual Taken</th>
+            <th>Casual Balance</th>
+
+            <th>Action</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {getAnnualLeaveAnniversaryRows().length === 0 ? (
+            <tr>
+              <td
+                colSpan="14"
+                style={{
+                  textAlign: "center",
+                  padding: 20,
+                }}
+              >
+                No active staff found.
+              </td>
+            </tr>
+          ) : (
+            getAnnualLeaveAnniversaryRows().map((r) => {
+              const buttonDisabled =
+                !r.reached || r.adjusted;
+
+              return (
+                <tr key={r.uid}>
+                  <td>{r.eid || "-"}</td>
+
+                  <td>{r.name || "-"}</td>
+
+                  {/* <td>{r.department || "-"}</td> */}
+
+                  <td>{r.doe || "-"}</td>
+
+                  <td>
+                    {r.anniversaryDate || "-"}
+                  </td>
+
+                  <td>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        minWidth: 90,
+                        padding: "6px 10px",
+                        borderRadius: 6,
+                        textAlign: "center",
+                        fontWeight: 700,
+
+                        background:
+                          r.status === "Adjusted"
+                            ? "#dcfce7"
+                            : r.status === "Reached"
+                              ? "#fef3c7"
+                              : "#e5e7eb",
+
+                        color:
+                          r.status === "Adjusted"
+                            ? "#15803d"
+                            : r.status === "Reached"
+                              ? "#b45309"
+                              : "#4b5563",
+                      }}
+                    >
+                      {r.status}
+                    </span>
+
+                    {r.adjustedDate && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: 12,
+                          color: "#666",
+                        }}
+                      >
+                        {r.adjustedDate}
+                      </div>
+                    )}
+                  </td>
+
+                  <td>{r.annualTotal}</td>
+
+                 {/*  <td>{r.annualCarry}</td> */}
+
+                  <td>{r.annualTaken}</td>
+
+                  <td>{r.annualBalance}</td>
+
+                  <td>{r.casualAllowance}</td>
+
+                  <td>{r.casualTaken}</td>
+
+                  <td>{r.casualBalance}</td>
+
+                  <td>
+                    <button
+                      type="button"
+                      className="btn small blue"
+                      disabled={buttonDisabled}
+                      onClick={() =>
+                        autoAdjustOneStaffAnnualLeave(
+                          r.uid
+                        )
+                      }
+                      style={{
+                        opacity: buttonDisabled
+                          ? 0.55
+                          : 1,
+
+                        cursor: buttonDisabled
+                          ? "not-allowed"
+                          : "pointer",
+                      }}
+                    >
+                      {r.adjusted
+                        ? "Adjusted"
+                        : "Auto Add"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+    </section>
+  )}
+  
 
     {activeSidebar === "company-management" && isSuperAdmin && (
   <div className="page">
