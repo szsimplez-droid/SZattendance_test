@@ -106,93 +106,7 @@ const MoneyInput = ({ name, value, onChange, disabled }) => {
 
 
   // AUTO FILL DATA FROM FIRESTORE
-  /* const loadPayrollAutoData = async (uid) => {
-  if (!uid) return;
-
-  // --- LOAD ATTENDANCE ---
-  const attQ = query(collection(db, "attendance"), where("userId", "==", uid));
-  const attSnap = await getDocs(attQ);
-
-  let attendanceDays = 0;
-  let holidayDays = 0;
-  let holidayHours = 0;
-
-  attSnap.forEach((doc) => {
-    const a = doc.data();
-    if (a.clockIn) attendanceDays++;
-
-    const date = new Date(a.date);
-    const day = date.getDay(); // 0 = Sun, 6 = Sat
-
-    if (day === 0 || day === 6) {
-      holidayDays++;
-
-      if (a.clockIn && a.clockOut) {
-        const diff = (new Date(a.clockOut) - new Date(a.clockIn)) / 3600000;
-        holidayHours += diff > 0 ? diff : 0;
-      }
-    }
-  });
-
-  // --- LOAD LEAVES ---
-  const leaveQ = query(collection(db, "leaves"), where("userId", "==", uid));
-  const leaveSnap = await getDocs(leaveQ);
-
-  let annual = 0,
-    casual = 0,
-    sick = 0,
-    comp = 0;
-
-  leaveSnap.forEach((doc) => {
-    const l = doc.data();
-    if (l.status !== "approved") return;
-
-    const start = new Date(l.startDate);
-    const end = new Date(l.endDate);
-    const days = (end - start) / 86400000 + 1;
-
-    if (l.leaveName === "Annual Leave") annual += days;
-    if (l.leaveName === "Casual Leave") casual += days;
-    if (l.leaveName === "Sick Leave") sick += days;
-    if (l.leaveName === "Withoutpay Leave") comp += days;
-  });
-
-  // --- LOAD OVERTIME ---
-  const otQ = query(collection(db, "overtimeRequests"), where("userId", "==", uid));
-  const otSnap = await getDocs(otQ);
-
-  let otHours = 0;
-
-  otSnap.forEach((doc) => {
-    const o = doc.data();
-    if (o.status !== "approved") return;
-
-    const [sh, sm] = o.startTime.split(":").map(Number);
-    const [eh, em] = o.endTime.split(":").map(Number);
-    const diff = eh * 60 + em - (sh * 60 + sm);
-
-    if (diff > 0) otHours += diff / 60;
-  });
-
-
-// ---------------- UPDATE FORM ----------------
-
-  // --- UPDATE FORM ---
-  setData((prev) => ({
-    ...prev,
-    annualLeave: annual,
-    casualLeave: casual,
-    sickLeave: sick,
-    compLeave: comp,
-    holidayWorkDays: holidayDays,
-    holidayWorkHours: holidayHours,
-    overtimeHours: otHours,
-    workedDays: attendanceDays,
-   
-  }));
-}; */
-
-const loadPayrollAutoData = async (uid, ym) => {
+ const loadPayrollAutoData = async (uid, ym) => {
   if (!uid || !ym) return;
 
   // Firestore can store dates as string ("YYYY-MM-DD"), JS Date, or Timestamp.
@@ -507,8 +421,28 @@ const sanitizeForFirestore = (obj) => {
 
   const preferentialTotal = usdConversion * data.cbRate;
 
+/* const sortedUsers = Object.entries(usersMap)
+  .sort(([, a], [, b]) => a.eid.localeCompare(b.eid)); */
+
+   const isEffectivelyResigned = (u) => {
+  if (!u) return false;
+
+  const status = u.employmentStatus || "active";
+  if (status !== "resigned") return false;
+
+  if (!u.resignedDate) return true;
+
+  const today = new Date().toISOString().slice(0, 10);
+  return today >= u.resignedDate;
+};
+
 const sortedUsers = Object.entries(usersMap)
-  .sort(([, a], [, b]) => a.eid.localeCompare(b.eid));
+  .filter(([, user]) => !isEffectivelyResigned(user))
+  .sort(([, a], [, b]) =>
+    (a.eid || "").localeCompare(b.eid || "", undefined, {
+      numeric: true,
+    })
+  );
 
 
   /* When user changes → load their draft */
